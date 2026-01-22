@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "firewall": {
+      "command": "node",
+      "args": ["/workspace/mcp-server/server.js"],
+      "env": {
+        "FIREWALL_URL": "http://firewall:8080"
+      },
+      "trust": false
+    }
+  }
+}
