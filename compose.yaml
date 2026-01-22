@@ -3,12 +3,22 @@ services:
     build: ./firewall
     cap_add:
       - NET_ADMIN
+    environment:
+      - EVAL_TOKEN=${EVAL_TOKEN}
     ports:
       - "127.0.0.1:8080:8080"
+    healthcheck:
+      test: ["CMD", "bash", "-lc", "python3 -c \"import urllib.request; urllib.request.urlopen('http://localhost:8080/health', timeout=2).read()\""]
+      interval: 5s
+      timeout: 3s
+      retries: 20
 
   client:
     build: ./client
     network_mode: "service:firewall"
+    depends_on:
+      firewall:
+        condition: service_healthy
     tty: true
     stdin_open: true
 
@@ -18,6 +28,19 @@ services:
       - GEMINI_API_KEY=${GEMINI_API_KEY}
       - FIREWALL_URL=http://firewall:8080
     depends_on:
-      - firewall
+      firewall:
+        condition: service_healthy
+    tty: true
+    stdin_open: true
+
+  evaluator:
+    build: ./evaluator
+    environment:
+      - FIREWALL_URL=http://firewall:8080
+      - EVAL_TOKEN=${EVAL_TOKEN}
+      - FLAG_SECRET=${FLAG_SECRET}
+    depends_on:
+      firewall:
+        condition: service_healthy
     tty: true
     stdin_open: true

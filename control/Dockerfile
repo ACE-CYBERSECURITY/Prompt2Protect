@@ -1,7 +1,6 @@
 FROM node:20-bookworm-slim
 
 ENV GEMINI_CLI_NO_UPDATE=1
-ENV GEMINI_CLI_NO_SHELL=1
 
 RUN apt-get update && apt-get install -y \
   curl jq dnsutils iputils-ping netcat-traditional procps \
@@ -9,15 +8,18 @@ RUN apt-get update && apt-get install -y \
 
 RUN npm install -g @google/gemini-cli@0.5.4
 
-RUN printf '#!/bin/sh\nexec /usr/bin/gemini --no-shell "$@"\n' > /usr/local/bin/gemini \
- && chmod +x /usr/local/bin/gemini
-
+# Create non-root user
 RUN useradd -m participant
-USER participant
+
 WORKDIR /home/participant
 
-COPY .gemini /home/participant/.gemini
-COPY mcp-server /home/participant/mcp-server
-RUN cd mcp-server && npm install
+# Copy files owned by participant (this fixes node_modules permission)
+COPY --chown=participant:participant .gemini /home/participant/.gemini
+COPY --chown=participant:participant mcp-server /home/participant/mcp-server
 
-CMD ["bash"]
+USER participant
+
+# Install deps as participant
+RUN cd /home/participant/mcp-server && npm ci || npm install
+
+CMD ["gemini"]

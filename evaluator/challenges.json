@@ -1,0 +1,25 @@
+[
+  {
+    "number": 1,
+    "id": "L1_BLOCK_OUTBOUND_IP_1111",
+    "title": "Blacklist outbound IP",
+    "goal": "Block outbound traffic to 1.1.1.1, without changing default OUTPUT policy.",
+    "flag_inner_xor_hex": "157016151c060977090d770b79701a08",
+    "checks": [
+      { "type": "assert_ipset_contains", "set": "p2p_out_block_dst", "ip": "1.1.1.1", "present": true },
+      { "type": "probe_tcp_out", "host": "1.1.1.1", "port": 443, "expect_reachable": false }
+    ]
+  },
+  {
+    "number": 2,
+    "id": "L1_OUTPUT_LOCKDOWN_DNS_HTTPS",
+    "title": "Lockdown + allow DNS/HTTPS",
+    "goal": "Set OUTPUT policy DROP, then allow DNS + HTTPS so name resolution and 443 work.",
+    "flag_inner_xor_hex": "157016151c060977090d770b79701a080a",
+    "checks": [
+      { "type": "assert_iptables_policy", "chain": "OUTPUT", "policy": "DROP" },
+      { "type": "probe_dns_out", "name": "example.com", "expect_any_ip": true },
+      { "type": "probe_tcp_out", "host": "1.1.1.1", "port": 443, "expect_reachable": true }
+    ]
+  }
+]

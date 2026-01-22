@@ -1,12 +1,42 @@
 {
+  "general": {
+    "disableAutoUpdate": true,
+    "disableUpdateNag": true
+  },
+  "tools": {
+    "exclude": ["run_shell_command", "write_file", "replace"]
+  },
   "mcpServers": {
     "firewall": {
       "command": "node",
-      "args": ["/workspace/mcp-server/server.js"],
+      "args": ["/home/participant/mcp-server/server.js"],
       "env": {
         "FIREWALL_URL": "http://firewall:8080"
       },
-      "trust": false
+      "trust": false,
+      "includeTools": [
+        "firewall_status",
+        "firewall_reset",
+        "lockdown_output",
+        "allow_all_output",
+        "allow_dns",
+        "allow_https",
+        "block_output_icmp",
+        "output_allow_port",
+        "output_block_port",
+        "output_whitelist_ip",
+        "output_blacklist_ip",
+        "output_unwhitelist_ip",
+        "output_unblacklist_ip",
+        "input_allow_port",
+        "input_block_port",
+        "input_whitelist_ip",
+        "input_blacklist_ip",
+        "input_unwhitelist_ip",
+        "input_unblacklist_ip",
+        "block_ssh",
+        "block_input_icmp"
+      ]
     }
   }
 }
