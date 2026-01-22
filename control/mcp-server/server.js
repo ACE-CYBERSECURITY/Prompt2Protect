@@ -2,80 +2,45 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
 
-const FIREWALL_URL = process.env.FIREWALL_URL || "http://firewall:8080";
+const FIREWALL = process.env.FIREWALL_URL;
 
-async function httpPost(path) {
-  const res = await fetch(`${FIREWALL_URL}${path}`, { method: "POST" });
-  const body = await res.text();
-  return { ok: res.ok, status: res.status, body };
+async function post(path) {
+  const r = await fetch(`${FIREWALL}${path}`, { method: "POST" });
+  return await r.json();
 }
 
-async function httpGet(path) {
-  const res = await fetch(`${FIREWALL_URL}${path}`);
-  const body = await res.text();
-  return { ok: res.ok, status: res.status, body };
+async function get(path) {
+  const r = await fetch(`${FIREWALL}${path}`);
+  return await r.json();
 }
 
-const server = new McpServer({ name: "workshop-firewall", version: "1.0.0" });
+const server = new McpServer({ name: "firewall-mcp", version: "2.0" });
 
-server.registerTool(
-  "firewall_status",
-  {
-    title: "Firewall status",
-    description: "Show current iptables rules (iptables -S).",
-    inputSchema: z.object({})
-  },
-  async () => ({
-    content: [{ type: "text", text: JSON.stringify(await httpGet("/status"), null, 2) }]
-  })
-);
+function tool(name, desc, path) {
+  server.registerTool(
+    name,
+    { title: name, description: desc, inputSchema: z.object({}) },
+    async () => ({
+      content: [{ type: "text", text: JSON.stringify(await post(path), null, 2) }]
+    })
+  );
+}
 
-server.registerTool(
-  "firewall_lockdown",
-  {
-    title: "Lock down egress",
-    description: "Default-deny OUTPUT (client loses internet until allow rules are added).",
-    inputSchema: z.object({})
-  },
-  async () => ({
-    content: [{ type: "text", text: JSON.stringify(await httpPost("/lockdown"), null, 2) }]
-  })
-);
+server.registerTool("firewall_status", {
+  title: "Firewall status",
+  description: "Show iptables rules. MCP-only control.",
+  inputSchema: z.object({})
+}, async () => ({
+  content: [{ type: "text", text: JSON.stringify(await get("/status"), null, 2) }]
+}));
 
-server.registerTool(
-  "firewall_allow_dns",
-  {
-    title: "Allow DNS",
-    description: "Allow outbound DNS (udp/tcp 53).",
-    inputSchema: z.object({})
-  },
-  async () => ({
-    content: [{ type: "text", text: JSON.stringify(await httpPost("/allow_dns"), null, 2) }]
-  })
-);
+tool("lockdown_output", "Default deny outbound traffic", "/output/lockdown");
+tool("allow_all_output", "Allow all outbound traffic", "/output/allow_all");
+tool("allow_dns", "Allow DNS egress", "/output/allow_dns");
+tool("allow_https", "Allow HTTPS egress", "/output/allow_https");
+tool("block_output_icmp", "Block outbound ICMP", "/output/block_icmp");
 
-server.registerTool(
-  "firewall_allow_https",
-  {
-    title: "Allow HTTPS",
-    description: "Allow outbound HTTPS (tcp 443).",
-    inputSchema: z.object({})
-  },
-  async () => ({
-    content: [{ type: "text", text: JSON.stringify(await httpPost("/allow_https"), null, 2) }]
-  })
-);
-
-server.registerTool(
-  "firewall_reset",
-  {
-    title: "Reset firewall",
-    description: "Flush rules and allow all outbound traffic.",
-    inputSchema: z.object({})
-  },
-  async () => ({
-    content: [{ type: "text", text: JSON.stringify(await httpPost("/reset"), null, 2) }]
-  })
-);
+tool("block_ssh", "Block inbound SSH", "/input/block_ssh");
+tool("block_input_icmp", "Block inbound ICMP", "/input/block_icmp");
 
 await server.connect(new StdioServerTransport());

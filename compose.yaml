@@ -4,7 +4,7 @@ services:
     cap_add:
       - NET_ADMIN
     ports:
-      - "8080:8080"
+      - "127.0.0.1:8080:8080"
 
   client:
     build: ./client
@@ -12,13 +12,12 @@ services:
     tty: true
     stdin_open: true
 
-
   control:
     build: ./control
     environment:
       - GEMINI_API_KEY=${GEMINI_API_KEY}
+      - FIREWALL_URL=http://firewall:8080
     depends_on:
       - firewall
-    command: ["bash", "-lc", "sleep infinity"]
     tty: true
     stdin_open: true
