@@ -1,24 +1,28 @@
 #!/usr/bin/env node
-import { execSync } from "child_process";
+import { exec } from "child_process";
+import { promisify } from "util";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { ListToolsRequestSchema, CallToolRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 
+const execAsync = promisify(exec);
+
 /* ================= INTERNAL EXECUTOR ================= */
-const ipt = (args) => {
+// Added -w 5 to wait up to 5 seconds for the xtables lock
+const ipt = async (args) => {
   try {
-    return execSync(`sudo iptables ${args}`, { stdio: "pipe" }).toString();
+    const { stdout, stderr } = await execAsync(`sudo iptables -w 5 ${args}`);
+    return stdout.toString() || stderr.toString() || "Success (no output)";
   } catch (e) {
-    return e.stderr?.toString() || e.message;
+    return `Error: ${e.stderr?.toString() || e.message}`;
   }
 };
 
-/* ================= ROLLBACK STATE ================= */
 let ruleHistory = [];
 
 /* ================= MCP SERVER ================= */
 const server = new Server(
-  { name: "firewall-tool", version: "1.0.0" },
+  { name: "firewall-tool", version: "2.1.0" },
   { capabilities: { tools: {} } }
 );
 
@@ -27,61 +31,26 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
   tools: [
     {
       name: "add_firewall_rule",
-      description: "Add firewall rule (natural language friendly)",
+      description: "Directly execute an iptables command. Use this for blocking/allowing ports.",
       inputSchema: {
         type: "object",
         properties: {
-          action: {
-            enum: ["accept", "allow", "drop", "block", "reject"]
-          },
-          protocol: {
-            enum: ["tcp", "udp", "all"]
-          },
-          port: { type: "number" },
-          source: { type: "string" },
-          direction: {
-            enum: ["in", "out", "inbound", "outbound"]
+          args: { 
+            type: "string", 
+            description: "The full iptables arguments, e.g., '-A INPUT -p tcp --dport 80 -j DROP'" 
           }
-        },
-        required: ["action", "protocol", "port"],
-        additionalProperties: false
-      }
-    },
-    {
-      name: "rollback_last_rule",
-      description: "Rollback last firewall rule",
-      inputSchema: { type: "object", properties: {} }
-    },
-    {
-      name: "reset_firewall",
-      description: "Flush all firewall rules",
-      inputSchema: { type: "object", properties: {} }
-    },
-    {
-      name: "resolve_firewall_intent",
-      description: "Handle ambiguous firewall prompts",
-      inputSchema: {
-        type: "object",
-        properties: {
-          intent: { type: "string" }
-        },
-        required: ["intent"]
-      }
-    },
-    {
-      name: "iptables_exec",
-      description: "Execute raw iptables args (last resort)",
-      inputSchema: {
-        type: "object",
-        properties: {
-          args: { type: "string" }
         },
         required: ["args"]
       }
     },
     {
-      name: "list_available_tools",
-      description: "List available firewall tools",
+      name: "rollback_last_rule",
+      description: "Undo the very last iptables rule added in this session.",
+      inputSchema: { type: "object", properties: {} }
+    },
+    {
+      name: "reset_firewall",
+      description: "Flush all rules and set default policies to ACCEPT.",
       inputSchema: { type: "object", properties: {} }
     }
   ]
@@ -91,107 +60,57 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
 server.setRequestHandler(CallToolRequestSchema, async (req) => {
   const { name, arguments: a = {} } = req.params;
 
-  /* ---- ADD FIREWALL RULE ---- */
-  if (name === "add_firewall_rule") {
-    const actionMap = {
-      accept: "ACCEPT",
-      allow: "ACCEPT",
-      drop: "DROP",
-      block: "DROP",
-      reject: "REJECT"
-    };
+  try {
+    if (name === "add_firewall_rule") {
+      const output = await ipt(a.args);
 
-    const dirMap = {
-      in: "INPUT",
-      inbound: "INPUT",
-      out: "OUTPUT",
-      outbound: "OUTPUT"
-    };
+      // Rollback Logic: Capture info if it's an append command
+      const match = a.args.match(/-A\s+(INPUT|OUTPUT|FORWARD)/);
+      if (match) {
+        const chain = match[1];
+        // Fetch current state to find the line number
+        const listOutput = await ipt(`-L ${chain} --line-numbers -n`);
+        const lines = listOutput.trim().split("\n");
+        const lastLine = lines[lines.length - 1];
+        const ruleNumber = lastLine.trim().split(/\s+/)[0];
+        
+        if (!isNaN(ruleNumber)) {
+          ruleHistory.push({ chain, ruleNumber });
+        }
+      }
 
-    const action = actionMap[a.action];
-    const chain = dirMap[a.direction || "inbound"];
-    const proto = a.protocol === "all" ? "" : `-p ${a.protocol}`;
-    const src = a.source ? `-s ${a.source}` : "";
-
-    // sane defaults
-    ipt("-P INPUT DROP");
-    ipt("-A INPUT -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT");
-
-    ipt(`-A ${chain} ${proto} --dport ${a.port} ${src} -j ${action}`);
-
-    // get rule number for rollback
-    const rules = ipt(`-L ${chain} --line-numbers -n`).trim().split("\n");
-    const lastLine = rules[rules.length - 1];
-    const ruleNumber = lastLine.split(/\s+/)[0];
-
-    ruleHistory.push({ chain, ruleNumber });
-
-    return {
-      content: [{ type: "text", text: `Rule added (rule #${ruleNumber})` }]
-    };
-  }
-
-  /* ---- ROLLBACK ---- */
-  if (name === "rollback_last_rule") {
-    const last = ruleHistory.pop();
-    if (!last) {
-      return { content: [{ type: "text", text: "No rule to rollback" }] };
+      return {
+        content: [{ type: "text", text: `Status: ${output}` }]
+      };
     }
-    ipt(`-D ${last.chain} ${last.ruleNumber}`);
-    return { content: [{ type: "text", text: "Last rule rolled back" }] };
-  }
 
-  /* ---- RESET ---- */
-  if (name === "reset_firewall") {
-    ipt("-F");
-    ipt("-X");
-    ipt("-P INPUT ACCEPT");
-    ipt("-P OUTPUT ACCEPT");
-    ruleHistory = [];
-    return { content: [{ type: "text", text: "Firewall reset" }] };
-  }
+    if (name === "rollback_last_rule") {
+      const last = ruleHistory.pop();
+      if (!last) {
+        return { content: [{ type: "text", text: "No history found to rollback." }] };
+      }
+      const output = await ipt(`-D ${last.chain} ${last.ruleNumber}`);
+      return { content: [{ type: "text", text: `Rolled back rule ${last.ruleNumber} from ${last.chain}. Result: ${output}` }] };
+    }
 
-  /* ---- AMBIGUOUS HANDLER ---- */
-  if (name === "resolve_firewall_intent") {
-    return {
-      content: [{
-        type: "text",
-        text:
-          "Supported actions:\n" +
-          "- add_firewall_rule\n" +
-          "- rollback_last_rule\n" +
-          "- reset_firewall\n" +
-          "- iptables_exec (advanced)"
-      }]
-    };
-  }
+    if (name === "reset_firewall") {
+      await ipt("-F");
+      await ipt("-X");
+      await ipt("-P INPUT ACCEPT");
+      await ipt("-P OUTPUT ACCEPT");
+      ruleHistory = [];
+      return { content: [{ type: "text", text: "Firewall completely reset to default ACCEPT." }] };
+    }
 
-  /* ---- GENERIC EXECUTOR ---- */
-  if (name === "iptables_exec") {
-    return {
-      content: [{ type: "text", text: ipt(a.args) || "OK" }]
-    };
+    return { content: [{ type: "text", text: "Unknown tool" }], isError: true };
+  } catch (error) {
+    return { content: [{ type: "text", text: `Runtime Error: ${error.message}` }], isError: true };
   }
-
-  /* ---- TOOL LIST ---- */
-  if (name === "list_available_tools") {
-    return {
-      content: [{
-        type: "text",
-        text:
-          "add_firewall_rule\n" +
-          "rollback_last_rule\n" +
-          "reset_firewall\n" +
-          "resolve_firewall_intent\n" +
-          "iptables_exec\n" +
-          "list_available_tools"
-      }]
-    };
-  }
-
-  return { content: [{ type: "text", text: "Unknown tool" }] };
 });
 
+/* ================= START ================= */
+const transport = new StdioServerTransport();
+await server.connect(transport);
 
-await server.connect(new StdioServerTransport());
-console.error("Firewall MCP running (FULL + FIXED)");
+// Use console.error for logging so it doesn't break the STDIO JSON pipe
+console.error("🚀 Firewall MCP Server Started (Async Mode)");
