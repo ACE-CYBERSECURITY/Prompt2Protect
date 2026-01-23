@@ -17,25 +17,52 @@
       "includeTools": [
         "firewall_status",
         "firewall_reset",
+
+        "set_input_policy_drop",
+        "set_input_policy_accept",
+        "set_output_policy_drop",
+        "set_output_policy_accept",
+
         "lockdown_output",
         "allow_all_output",
         "allow_dns",
         "allow_https",
         "block_output_icmp",
+
         "output_allow_port",
         "output_block_port",
         "output_whitelist_ip",
         "output_blacklist_ip",
         "output_unwhitelist_ip",
         "output_unblacklist_ip",
+
         "input_allow_port",
         "input_block_port",
         "input_whitelist_ip",
         "input_blacklist_ip",
         "input_unwhitelist_ip",
         "input_unblacklist_ip",
+
         "block_ssh",
-        "block_input_icmp"
+        "block_input_icmp",
+
+        "ipset_create",
+        "ipset_add_ip",
+        "ipset_remove_ip",
+
+        "input_drop_if_src_in_set",
+        "output_drop_if_dst_in_set",
+
+        "time_window_set",
+        "input_allow_port_with_time_window",
+
+        "ssh_rate_window_set",
+        "ssh_rate_limit_set",
+        "ssh_ban_set_config",
+        "ssh_protection_enable",
+
+        "tc_set_rate_profile",
+        "tc_apply_profile_time_window"
       ]
     }
   }

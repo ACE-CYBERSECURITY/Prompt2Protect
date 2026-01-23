@@ -44,3 +44,5 @@ services:
         condition: service_healthy
     tty: true
     stdin_open: true
+    restart: unless-stopped
+

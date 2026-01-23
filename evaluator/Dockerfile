@@ -7,3 +7,4 @@ COPY server.py /app/server.py
 COPY challenges.json /app/challenges.json
 
 CMD ["python", "/app/server.py"]
+
