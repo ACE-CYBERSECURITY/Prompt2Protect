@@ -29,7 +29,7 @@ async function get(path) {
   return data;
 }
 
-const server = new McpServer({ name: "firewall-mcp", version: "3.0" });
+const server = new McpServer({ name: "firewall-mcp", version: "3.1" });
 
 function toolNoInput(name, desc, path, method = "POST") {
   server.registerTool(
@@ -41,17 +41,48 @@ function toolNoInput(name, desc, path, method = "POST") {
   );
 }
 
-// Pretty status (participant changes only)
+// ========== FIXED: Dynamic firewall_status ==========
 server.registerTool("firewall_status", {
   title: "Firewall status",
   description: "Human-readable firewall state (participant changes only): policies, ports, ICMP, IP sets, time window, ssh protect, tc.",
   inputSchema: z.object({})
 }, async () => {
   const s = await get("/status/summary");
-
   const fmtPorts = (arr) => (arr?.length ? arr.map(x => `${x.protocol}/${x.port}`).join(", ") : "(none)");
   const fmtIPs = (arr) => (arr?.length ? arr.join(", ") : "(none)");
-
+  
+  // Build IP sets section DYNAMICALLY
+  let ipsetsText = "IP sets (members):\n";
+  
+  // Known baseline sets (always show in specific order)
+  const baselineSets = [
+    { key: "p2p_in_allow_src", label: "IN allow (src)" },
+    { key: "p2p_in_block_src", label: "IN block (src)" },
+    { key: "p2p_out_allow_dst", label: "OUT allow (dst)" },
+    { key: "p2p_out_block_dst", label: "OUT block (dst)" },
+    { key: "p2p_quarantine_src", label: "Quarantine (src drop)" },
+    { key: "p2p_ssh_ban_src", label: "SSH ban (src drop)" }
+  ];
+  
+  for (const { key, label } of baselineSets) {
+    const members = s.ipsets?.[key]?.members || [];
+    ipsetsText += `- ${label}: ${fmtIPs(members)}\n`;
+  }
+  
+  // Add any CUSTOM ipsets that aren't baseline
+  if (s.ipsets) {
+    const baselineKeys = baselineSets.map(x => x.key);
+    const customSets = Object.keys(s.ipsets).filter(k => !baselineKeys.includes(k)).sort();
+    
+    if (customSets.length > 0) {
+      ipsetsText += "\nCustom IP sets:\n";
+      for (const setName of customSets) {
+        const members = s.ipsets[setName].members || [];
+        ipsetsText += `- ${setName}: ${fmtIPs(members)}\n`;
+      }
+    }
+  }
+  
   const text =
 `Firewall status (participant changes only)
 
@@ -69,21 +100,15 @@ Ports (explicit rules):
 - OUTPUT allow: ${fmtPorts(s.ports?.output_allow)}
 - OUTPUT block: ${fmtPorts(s.ports?.output_block)}
 
-IP sets (members):
-- IN allow (src):        ${fmtIPs(s.ipsets?.IN_ALLOW?.members)}
-- IN block (src):        ${fmtIPs(s.ipsets?.IN_BLOCK?.members)}
-- OUT allow (dst):       ${fmtIPs(s.ipsets?.OUT_ALLOW?.members)}
-- OUT block (dst):       ${fmtIPs(s.ipsets?.OUT_BLOCK?.members)}
-- Quarantine (src drop): ${fmtIPs(s.ipsets?.QUARANTINE_SRC?.members)}
-- SSH ban (src drop):    ${fmtIPs(s.ipsets?.SSH_BAN_SRC?.members)}
-
+${ipsetsText}
 Time window (for next time-aware rule):
 - start: ${s.time_window?.start ?? "(unset)"}
 - stop:  ${s.time_window?.stop ?? "(unset)"}
-- tz:    ${s.time_window?.tz ?? "(unset)"}
+- tz:    ${s.time_window?.tz ?? "kerneltz"}
 
 SSH protection:
 - enabled: ${s.ssh_protect?.enabled ? "yes" : "no"}
+- window_seconds: ${s.ssh_protect?.window_seconds ?? "?"}
 - per_minute: ${s.ssh_protect?.per_minute ?? "?"}
 - burst: ${s.ssh_protect?.burst ?? "?"}
 - ban_seconds: ${s.ssh_protect?.ban_seconds ?? "?"}
@@ -93,7 +118,7 @@ TC shaping:
 - profiles: ${Object.keys(s.tc_profiles ?? {}).length ? JSON.stringify(s.tc_profiles) : "(none)"}
 - active schedule: ${s.tc_active?.name ? JSON.stringify(s.tc_active) : "(none)"}
 `;
-
+  
   return { content: [{ type: "text", text }] };
 });
 
@@ -106,13 +131,12 @@ toolNoInput("set_input_policy_accept", "Set INPUT default policy ACCEPT.", "/pol
 toolNoInput("set_output_policy_drop", "Set OUTPUT default policy DROP.", "/policy/output_drop");
 toolNoInput("set_output_policy_accept", "Set OUTPUT default policy ACCEPT.", "/policy/output_accept");
 
-// Existing compatibility tools (still useful)
+// Existing compatibility tools
 toolNoInput("lockdown_output", "Default deny outbound traffic (OUTPUT policy DROP).", "/output/lockdown");
 toolNoInput("allow_all_output", "Allow all outbound traffic (OUTPUT policy ACCEPT).", "/output/allow_all");
 toolNoInput("allow_dns", "Allow DNS egress (tcp/udp 53).", "/output/allow_dns");
 toolNoInput("allow_https", "Allow HTTPS egress (tcp 443).", "/output/allow_https");
 toolNoInput("block_output_icmp", "Block outbound ICMP.", "/output/block_icmp");
-
 toolNoInput("block_ssh", "Block inbound SSH (tcp 22).", "/input/block_ssh");
 toolNoInput("block_input_icmp", "Block inbound ICMP.", "/input/block_icmp");
 
@@ -141,7 +165,7 @@ server.registerTool("input_block_port", {
   inputSchema: z.object({ port: z.number().int().min(1).max(65535), protocol: z.enum(["tcp", "udp", "icmp"]) })
 }, async (args) => ({ content: [{ type: "text", text: JSON.stringify(await postJson("/input/block_port", args), null, 2) }] }));
 
-// IP list primitives (existing)
+// IP list primitives
 server.registerTool("output_whitelist_ip", {
   title: "Whitelist outbound destination IP",
   description: "Always allow outbound traffic to this destination IP (p2p_out_allow_dst).",
@@ -190,8 +214,6 @@ server.registerTool("input_unblacklist_ip", {
   inputSchema: z.object({ ip: z.string() })
 }, async (args) => ({ content: [{ type: "text", text: JSON.stringify(await postJson("/input/unblacklist_ip", args), null, 2) }] }));
 
-// --------- NEW primitives (the rest of the 25) ---------
-
 // ipset primitives
 server.registerTool("ipset_create", {
   title: "Create/ensure an ipset",
@@ -237,6 +259,27 @@ server.registerTool("input_allow_port_with_time_window", {
   inputSchema: z.object({ port: z.number().int().min(1).max(65535), protocol: z.enum(["tcp", "udp", "icmp"]) })
 }, async (args) => ({ content: [{ type: "text", text: JSON.stringify(await postJson("/time_window/input_allow_port", args), null, 2) }] }));
 
+
+server.registerTool("output_allow_port_to_ip", {
+  title: "Allow outbound port to specific IP",
+  description: "Allow OUTPUT to specific destination IP:port combination.",
+  inputSchema: z.object({ 
+    port: z.number().int().min(1).max(65535), 
+    protocol: z.enum(["tcp", "udp"]),
+    ip: z.string()
+  })
+}, async (args) => ({ content: [{ type: "text", text: JSON.stringify(await postJson("/output/allow_port_to_ip", args), null, 2) }] }));
+
+server.registerTool("output_block_port_to_others", {
+  title: "Block outbound port to all others",
+  description: "Block OUTPUT to a port for destinations not explicitly allowed (catch-all).",
+  inputSchema: z.object({ 
+    port: z.number().int().min(1).max(65535), 
+    protocol: z.enum(["tcp", "udp"])
+  })
+}, async (args) => ({ content: [{ type: "text", text: JSON.stringify(await postJson("/output/block_port_to_others", args), null, 2) }] }));
+
+
 // SSH rate/ban
 server.registerTool("ssh_rate_window_set", {
   title: "SSH rate window",
@@ -276,3 +319,24 @@ server.registerTool("tc_apply_profile_time_window", {
 }, async (args) => ({ content: [{ type: "text", text: JSON.stringify(await postJson("/tc/apply_time_window", args), null, 2) }] }));
 
 await server.connect(new StdioServerTransport());
+console.error("🚀 Firewall MCP Server Started (v3.1 - Dynamic ipsets)");
+
+server.registerTool("input_allow_port_from_subnet", {
+  title: "Allow inbound port from subnet",
+  description: "Allow INPUT from a CIDR subnet to a specific port.",
+  inputSchema: z.object({ 
+    port: z.number().int().min(1).max(65535), 
+    protocol: z.enum(["tcp", "udp"]),
+    subnet: z.string()
+  })
+}, async (args) => ({ content: [{ type: "text", text: JSON.stringify(await postJson("/input/allow_port_from_subnet", args), null, 2) }] }));
+
+server.registerTool("input_block_port_from_subnet", {
+  title: "Block inbound port from subnet",
+  description: "Block INPUT from a CIDR subnet to a specific port (inserted at top).",
+  inputSchema: z.object({ 
+    port: z.number().int().min(1).max(65535), 
+    protocol: z.enum(["tcp", "udp"]),
+    subnet: z.string()
+  })
+}, async (args) => ({ content: [{ type: "text", text: JSON.stringify(await postJson("/input/block_port_from_subnet", args), null, 2) }] }));

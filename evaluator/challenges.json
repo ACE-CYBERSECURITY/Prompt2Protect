@@ -1,25 +1,796 @@
 [
   {
-    "number": 1,
-    "id": "L1_BLOCK_OUTBOUND_IP_1111",
-    "title": "Blacklist outbound IP",
-    "goal": "Block outbound traffic to 1.1.1.1, without changing default OUTPUT policy.",
-    "flag_inner_xor_hex": "157016151c060977090d770b79701a08",
+    "number": 101,
+    "id": "DEMO_FIREWALL_BASICS",
+    "title": "Tutorial: Firewall Basics 101",
+    "goal": "Block inbound TCP port 80",
+    "flag_inner_xor_hex": "070832120d0f2c2c5f013d0e3234003c2a2c07023e2012273d",
     "checks": [
-      { "type": "assert_ipset_contains", "set": "p2p_out_block_dst", "ip": "1.1.1.1", "present": true },
-      { "type": "probe_tcp_out", "host": "1.1.1.1", "port": 443, "expect_reachable": false }
+      {
+        "type": "probe_tcp_in",
+        "port": 80,
+        "expect_reachable": false
+      }
+    ]
+  },
+  {
+    "number": 102,
+    "id": "DEMO_IPSET_BASICS",
+    "title": "Tutorial: IP Blocklists and Sets",
+    "goal": "Create ipset 'demo_blocklist', add 3 IPs, bind to INPUT DROP",
+    "flag_inner_xor_hex": "30293e0224115f223d0e3234031f1f5e3d30303129033d",
+    "checks": [
+      {
+        "type": "assert_ipset_exists",
+        "name": "demo_blocklist"
+      },
+      {
+        "type": "assert_ipset_contains",
+        "set": "demo_blocklist",
+        "ip": "198.51.100.10",
+        "present": true
+      },
+      {
+        "type": "assert_ipset_contains",
+        "set": "demo_blocklist",
+        "ip": "198.51.100.11",
+        "present": true
+      },
+      {
+        "type": "assert_ipset_contains",
+        "set": "demo_blocklist",
+        "ip": "198.51.100.12",
+        "present": true
+      }
+    ]
+  },
+  {
+    "number": 103,
+    "id": "DEMO_ZERO_TRUST",
+    "title": "Tutorial: Zero Trust Foundations",
+    "goal": "OUTPUT=DROP, INPUT=DROP, allow DNS outbound + HTTPS inbound",
+    "flag_inner_xor_hex": "2b03203c5f0210203e0224115f070c2f333d034224303c333f5f01233c30002c24",
+    "checks": [
+      {
+        "type": "assert_iptables_policy",
+        "chain": "OUTPUT",
+        "policy": "DROP"
+      },
+      {
+        "type": "assert_iptables_policy",
+        "chain": "INPUT",
+        "policy": "DROP"
+      },
+      {
+        "type": "probe_dns_out",
+        "name": "example.com",
+        "expect_any_ip": true
+      },
+      {
+        "type": "probe_tcp_in",
+        "port": 443,
+        "expect_reachable": true
+      },
+      {
+        "type": "probe_tcp_out",
+        "host": "1.1.1.1",
+        "port": 80,
+        "expect_reachable": false
+      }
+    ]
+  },
+  {
+    "number": 1,
+    "id": "ZEROTRUST_BOARD_MEETING",
+    "title": "The Board Meeting",
+    "goal": "Set OUTPUT default policy to DROP",
+    "flag_inner_xor_hex": "2b03203c5f021020203e02241137310c63",
+    "checks": [
+      {
+        "type": "assert_iptables_policy",
+        "chain": "OUTPUT",
+        "policy": "DROP"
+      }
     ]
   },
   {
     "number": 2,
-    "id": "L1_OUTPUT_LOCKDOWN_DNS_HTTPS",
-    "title": "Lockdown + allow DNS/HTTPS",
-    "goal": "Set OUTPUT policy DROP, then allow DNS + HTTPS so name resolution and 443 work.",
-    "flag_inner_xor_hex": "157016151c060977090d770b79701a080a",
+    "id": "ZEROTRUST_DNS_BROKEN",
+    "title": "Broken Name Resolution",
+    "goal": "OUTPUT=DROP, allow DNS (UDP+TCP port 53)",
+    "flag_inner_xor_hex": "02273e5f1f03303c30231434303c333f5f07301c03273d",
     "checks": [
-      { "type": "assert_iptables_policy", "chain": "OUTPUT", "policy": "DROP" },
-      { "type": "probe_dns_out", "name": "example.com", "expect_any_ip": true },
-      { "type": "probe_tcp_out", "host": "1.1.1.1", "port": 443, "expect_reachable": true }
+      {
+        "type": "assert_iptables_policy",
+        "chain": "OUTPUT",
+        "policy": "DROP"
+      },
+      {
+        "type": "probe_dns_out",
+        "name": "example.com",
+        "expect_any_ip": true
+      }
+    ]
+  },
+  {
+    "number": 3,
+    "id": "ZEROTRUST_INSIDER_THREAT",
+    "title": "The Insider Threat",
+    "goal": "Block outbound traffic to 198.18.0.25",
+    "flag_inner_xor_hex": "000203035e03203c2f03215f01310c630329033d",
+    "checks": [
+      {
+        "type": "assert_ipset_contains",
+        "set": "p2p_out_block_dst",
+        "ip": "198.18.0.25",
+        "present": true
+      },
+      {
+        "type": "probe_tcp_out",
+        "host": "198.18.0.25",
+        "port": 443,
+        "expect_reachable": false
+      }
+    ]
+  },
+  {
+    "number": 4,
+    "id": "ZEROTRUST_SELECTIVE_PARTNER",
+    "title": "Selective Partner Access",
+    "goal": "OUTPUT=DROP, allow 203.0.113.50, block 203.0.113.51",
+    "flag_inner_xor_hex": "2203302c3334303c2f335f03263c03033e5f00303f2420230c",
+    "checks": [
+      {
+        "type": "assert_iptables_policy",
+        "chain": "OUTPUT",
+        "policy": "DROP"
+      },
+      {
+        "type": "probe_tcp_out",
+        "host": "203.0.113.50",
+        "port": 443,
+        "expect_reachable": true
+      },
+      {
+        "type": "probe_tcp_out",
+        "host": "203.0.113.51",
+        "port": 443,
+        "expect_reachable": false
+      }
+    ]
+  },
+  {
+    "number": 5,
+    "id": "ZEROTRUST_DNS_HIJACK",
+    "title": "The DNS Hijacking",
+    "goal": "OUTPUT=DROP, block 9.9.9.9, allow DNS to 1.1.1.1 and 8.8.8.8",
+    "flag_inner_xor_hex": "02273e5f2201340c630329115f223424343c26044230033d",
+    "checks": [
+      {
+        "type": "assert_iptables_policy",
+        "chain": "OUTPUT",
+        "policy": "DROP"
+      },
+      {
+        "type": "assert_ipset_contains",
+        "set": "p2p_out_block_dst",
+        "ip": "9.9.9.9",
+        "present": true
+      },
+      {
+        "type": "probe_dns_out",
+        "name": "cloudflare.com",
+        "expect_any_ip": true
+      },
+      {
+        "type": "probe_tcp_out",
+        "host": "9.9.9.9",
+        "port": 53,
+        "expect_reachable": false
+      }
+    ]
+  },
+  {
+    "number": 6,
+    "id": "PERIMETER_BRUTE_FORCE",
+    "title": "The Brute Force Storm",
+    "goal": "Block inbound SSH (TCP port 22)",
+    "flag_inner_xor_hex": "2222225f29302425115f223302633c20033d",
+    "checks": [
+      {
+        "type": "probe_tcp_in",
+        "port": 22,
+        "expect_reachable": false
+      }
+    ]
+  },
+  {
+    "number": 7,
+    "id": "PERIMETER_ICMP_FLOOD",
+    "title": "The ICMP Flood",
+    "goal": "Block outbound ICMP, keep HTTPS working",
+    "flag_inner_xor_hex": "30002329115f072c30303d5f2224303c2722033d",
+    "checks": [
+      {
+        "type": "probe_icmp_out",
+        "host": "8.8.8.8",
+        "expect_reachable": false
+      },
+      {
+        "type": "probe_tcp_out",
+        "host": "1.1.1.1",
+        "port": 443,
+        "expect_reachable": true
+      }
+    ]
+  },
+  {
+    "number": 8,
+    "id": "PERIMETER_AFTER_HOURS",
+    "title": "After Hours Lockout",
+    "goal": "Allow inbound port 8080 only 09:00-17:00 UTC",
+    "flag_inner_xor_hex": "02303d2e035f01040e023d5f3d04630330033e",
+    "checks": [
+      {
+        "type": "assert_time_window_configured",
+        "start": "09:00",
+        "stop": "17:00"
+      },
+      {
+        "type": "probe_tcp_in_at_time",
+        "port": 8080,
+        "test_time": "10:00",
+        "expect_reachable": true
+      },
+      {
+        "type": "probe_tcp_in_at_time",
+        "port": 8080,
+        "test_time": "20:00",
+        "expect_reachable": false
+      }
+    ]
+  },
+  {
+    "number": 9,
+    "id": "PERIMETER_PARTNER_SUBNET",
+    "title": "Trusted Partner Subnet",
+    "goal": "Allow 192.168.50.1-99 and .104-254, block .100-103, block others",
+    "flag_inner_xor_hex": "22233e333c23225f223302263d033e24044234303c333f",
+    "checks": [
+      {
+        "type": "probe_tcp_in_from_source",
+        "source": "192.168.50.50",
+        "port": 9443,
+        "expect_reachable": true
+      },
+      {
+        "type": "probe_tcp_in_from_source",
+        "source": "192.168.50.101",
+        "port": 9443,
+        "expect_reachable": false
+      },
+      {
+        "type": "probe_tcp_in_from_source",
+        "source": "192.168.50.102",
+        "port": 9443,
+        "expect_reachable": false
+      },
+      {
+        "type": "probe_tcp_in_from_source",
+        "source": "203.0.113.1",
+        "port": 9443,
+        "expect_reachable": false
+      }
+    ]
+  },
+  {
+    "number": 10,
+    "id": "PERIMETER_SSH_FORTRESS",
+    "title": "SSH Fort Knox",
+    "goal": "Configure SSH rate limiting: 3/min, burst 5, ban 30min",
+    "flag_inner_xor_hex": "2222225f1f3d042303115f2c303d3424115f033f3d063b2c033d",
+    "checks": [
+      {
+        "type": "assert_ssh_rate_window",
+        "window_seconds": 60
+      },
+      {
+        "type": "assert_ssh_rate_limit",
+        "per_minute": 3,
+        "burst": 5
+      },
+      {
+        "type": "assert_ssh_ban_config",
+        "set_name": "ssh_blacklist",
+        "ban_seconds": 1800
+      },
+      {
+        "type": "assert_ssh_protection_enabled",
+        "enabled": true
+      },
+      {
+        "type": "simulate_ssh_attack",
+        "attempts": 10,
+        "expect_banned": true
+      }
+    ]
+  },
+  {
+    "number": 11,
+    "id": "DATALOSS_MALWARE_C2",
+    "title": "The Malware Beacon",
+    "goal": "Block outbound traffic to 198.18.0.25",
+    "flag_inner_xor_hex": "223d302c2d3402035f000205115f01310c630329033d",
+    "checks": [
+      {
+        "type": "assert_ipset_contains",
+        "set": "p2p_out_block_dst",
+        "ip": "198.18.0.25",
+        "present": true
+      },
+      {
+        "type": "probe_tcp_out",
+        "host": "198.18.0.25",
+        "port": 443,
+        "expect_reachable": false
+      },
+      {
+        "type": "probe_tcp_out",
+        "host": "198.18.0.25",
+        "port": 80,
+        "expect_reachable": false
+      }
+    ]
+  },
+  {
+    "number": 12,
+    "id": "DATALOSS_GDPR_FTP",
+    "title": "GDPR Violation Alert",
+    "goal": "Block outbound TCP port 21 (FTP), keep SSH+HTTPS working",
+    "flag_inner_xor_hex": "072024295f2920230424302c2c5f01310c630329033d",
+    "checks": [
+      {
+        "type": "probe_tcp_out",
+        "host": "203.0.113.75",
+        "port": 21,
+        "expect_reachable": false
+      },
+      {
+        "type": "probe_tcp_out",
+        "host": "203.0.113.75",
+        "port": 22,
+        "expect_reachable": true
+      },
+      {
+        "type": "probe_tcp_out",
+        "host": "203.0.113.75",
+        "port": 443,
+        "expect_reachable": true
+      }
+    ]
+  },
+  {
+    "number": 13,
+    "id": "DATALOSS_TEMP_EXCEPTION",
+    "title": "The Two-Hour Exception",
+    "goal": "Add 203.0.113.200 to allowlist with 7200s timeout",
+    "flag_inner_xor_hex": "02032e2c3c202420073c215f3d040630033e5f072024043f24033d",
+    "checks": [
+      {
+        "type": "assert_ipset_exists",
+        "name": "temp_allow"
+      },
+      {
+        "type": "assert_ipset_contains_with_timeout",
+        "set": "temp_allow",
+        "ip": "203.0.113.200",
+        "timeout_min": 7000,
+        "timeout_max": 7400
+      },
+      {
+        "type": "probe_tcp_out",
+        "host": "203.0.113.200",
+        "port": 443,
+        "expect_reachable": true
+      }
+    ]
+  },
+  {
+    "number": 14,
+    "id": "DATALOSS_DNS_TUNNEL",
+    "title": "DNS Tunneling Defense",
+    "goal": "Allow DNS only to 1.1.1.1 and 8.8.8.8, block others",
+    "flag_inner_xor_hex": "02273e5f0221213f333c2c5f29203c2f033f24033d",
+    "checks": [
+      {
+        "type": "probe_udp_out",
+        "host": "1.1.1.1",
+        "port": 53,
+        "expect_reachable": true
+      },
+      {
+        "type": "probe_udp_out",
+        "host": "8.8.8.8",
+        "port": 53,
+        "expect_reachable": true
+      },
+      {
+        "type": "probe_udp_out",
+        "host": "185.199.108.153",
+        "port": 53,
+        "expect_reachable": false
+      },
+      {
+        "type": "probe_tcp_out",
+        "host": "1.1.1.1",
+        "port": 443,
+        "expect_reachable": true
+      }
+    ]
+  },
+  {
+    "number": 15,
+    "id": "DATALOSS_AUTO_QUARANTINE",
+    "title": "Automated Threat Intelligence",
+    "goal": "Create ipset 'quarantine' with 3600s timeout, add 3 IPs, bind to OUTPUT DROP",
+    "flag_inner_xor_hex": "3d23242c3d042303275f1123240204333f24303c333f",
+    "checks": [
+      {
+        "type": "assert_ipset_exists",
+        "name": "quarantine",
+        "default_timeout": 3600
+      },
+      {
+        "type": "assert_ipset_contains",
+        "set": "quarantine",
+        "ip": "198.51.100.50",
+        "present": true
+      },
+      {
+        "type": "assert_ipset_contains",
+        "set": "quarantine",
+        "ip": "198.51.100.51",
+        "present": true
+      },
+      {
+        "type": "assert_ipset_contains",
+        "set": "quarantine",
+        "ip": "198.51.100.52",
+        "present": true
+      },
+      {
+        "type": "assert_iptables_rule_exists",
+        "match": "match-set quarantine dst",
+        "action": "DROP"
+      },
+      {
+        "type": "probe_tcp_out",
+        "host": "198.51.100.50",
+        "port": 443,
+        "expect_reachable": false
+      }
+    ]
+  },
+  {
+    "number": 16,
+    "id": "TRAFFIC_BANDWIDTH_HOG",
+    "title": "The Bandwidth Hog",
+    "goal": "Create tc profile 'night_limit' with 100Mbps (100000 kbit/s)",
+    "flag_inner_xor_hex": "022024042f07303c635f2920230f312c335f002024043d24033d",
+    "checks": [
+      {
+        "type": "assert_tc_profile_exists",
+        "name": "night_limit",
+        "rate_kbit": 100000
+      }
+    ]
+  },
+  {
+    "number": 17,
+    "id": "TRAFFIC_COST_OPTIMIZE",
+    "title": "Cost Optimization",
+    "goal": "Create 'off_hours_throttle' 50Mbps, apply 18:00-08:00 UTC",
+    "flag_inner_xor_hex": "3c0e07220c21020e5f022130242424305f3d3c3c30310c033d",
+    "checks": [
+      {
+        "type": "assert_tc_profile_exists",
+        "name": "off_hours_throttle",
+        "rate_kbit": 50000
+      },
+      {
+        "type": "assert_tc_schedule_active",
+        "name": "off_hours_throttle",
+        "start": "18:00",
+        "stop": "08:00",
+        "tz": "utc"
+      }
+    ]
+  },
+  {
+    "number": 18,
+    "id": "TRAFFIC_WEEKEND_CRISIS",
+    "title": "Weekend Streaming Crisis",
+    "goal": "Create 'weekend_limit' 25Mbps, apply Fri 17:00 - Mon 09:00 UTC",
+    "flag_inner_xor_hex": "2b03032903333d5f01043f273d2d3424275f00303f2420230c",
+    "checks": [
+      {
+        "type": "assert_tc_profile_exists",
+        "name": "weekend_limit",
+        "rate_kbit": 25000
+      },
+      {
+        "type": "assert_tc_schedule_active",
+        "name": "weekend_limit",
+        "start": "17:00",
+        "stop": "09:00",
+        "tz": "utc"
+      }
+    ]
+  },
+  {
+    "number": 19,
+    "id": "TRAFFIC_TIERED_SERVICE",
+    "title": "Tiered Bandwidth Service",
+    "goal": "Create 2 profiles: eng_work (500Mbps 09-17), eng_personal (100Mbps 17-09)",
+    "flag_inner_xor_hex": "0230032003275f223302203c630335f3d0434303c2f33",
+    "checks": [
+      {
+        "type": "assert_tc_profile_exists",
+        "name": "eng_work",
+        "rate_kbit": 500000
+      },
+      {
+        "type": "assert_tc_schedule_active",
+        "name": "eng_work",
+        "start": "09:00",
+        "stop": "17:00",
+        "tz": "local"
+      },
+      {
+        "type": "assert_tc_profile_exists",
+        "name": "eng_personal",
+        "rate_kbit": 100000
+      },
+      {
+        "type": "assert_tc_schedule_active",
+        "name": "eng_personal",
+        "start": "17:00",
+        "stop": "09:00",
+        "tz": "local"
+      }
+    ]
+  },
+  {
+    "number": 20,
+    "id": "TRAFFIC_DYNAMIC_OPTIMIZER",
+    "title": "Dynamic Cost Optimizer",
+    "goal": "4 profiles covering 24hrs: peak(800M,9-17), evening(300M,17-23), night(100M,23-2), deep_night(50M,2-9)",
+    "flag_inner_xor_hex": "00303e24115f302c24303d3c2e3320115f02032c30073c63033d",
+    "checks": [
+      {
+        "type": "assert_tc_profile_exists",
+        "name": "peak",
+        "rate_kbit": 800000
+      },
+      {
+        "type": "assert_tc_schedule_active",
+        "name": "peak",
+        "start": "09:00",
+        "stop": "17:00",
+        "tz": "utc"
+      },
+      {
+        "type": "assert_tc_profile_exists",
+        "name": "evening",
+        "rate_kbit": 300000
+      },
+      {
+        "type": "assert_tc_schedule_active",
+        "name": "evening",
+        "start": "17:00",
+        "stop": "23:00",
+        "tz": "utc"
+      },
+      {
+        "type": "assert_tc_profile_exists",
+        "name": "night",
+        "rate_kbit": 100000
+      },
+      {
+        "type": "assert_tc_schedule_active",
+        "name": "night",
+        "start": "23:00",
+        "stop": "02:00",
+        "tz": "utc"
+      },
+      {
+        "type": "assert_tc_profile_exists",
+        "name": "deep_night",
+        "rate_kbit": 50000
+      },
+      {
+        "type": "assert_tc_schedule_active",
+        "name": "deep_night",
+        "start": "02:00",
+        "stop": "09:00",
+        "tz": "utc"
+      }
+    ]
+  },
+  {
+    "number": 21,
+    "id": "RECON_STEALTH_MODE",
+    "title": "Stealth Mode",
+    "goal": "Block outbound ICMP, keep HTTPS working",
+    "flag_inner_xor_hex": "22243004302c24275f223c273305115f303f",
+    "checks": [
+      {
+        "type": "probe_icmp_out",
+        "host": "8.8.8.8",
+        "expect_reachable": false
+      },
+      {
+        "type": "probe_tcp_out",
+        "host": "8.8.8.8",
+        "port": 443,
+        "expect_reachable": true
+      }
+    ]
+  },
+  {
+    "number": 22,
+    "id": "RECON_SCANNER_BLOCK",
+    "title": "Scanner Blocklist",
+    "goal": "Create ipset 'scan_blocklist', add 203.0.113.100, bind to INPUT DROP",
+    "flag_inner_xor_hex": "22630d333f33020e115f3129115f01310c630329033d",
+    "checks": [
+      {
+        "type": "assert_ipset_exists",
+        "name": "scan_blocklist"
+      },
+      {
+        "type": "assert_ipset_contains",
+        "set": "scan_blocklist",
+        "ip": "203.0.113.100",
+        "present": true
+      },
+      {
+        "type": "assert_iptables_rule_exists",
+        "match": "match-set scan_blocklist src",
+        "action": "DROP"
+      },
+      {
+        "type": "probe_tcp_in_from_source",
+        "source": "203.0.113.100",
+        "port": 443,
+        "expect_reachable": false
+      }
+    ]
+  },
+  {
+    "number": 23,
+    "id": "RECON_ROTATING_FEED",
+    "title": "Rotating Threat Feed",
+    "goal": "Create 'rotating_threats' with 3600s timeout, add 3 IPs, bind to INPUT DROP",
+    "flag_inner_xor_hex": "1f3c2420303c333f265f022120043d04242c5f07333303273d",
+    "checks": [
+      {
+        "type": "assert_ipset_exists",
+        "name": "rotating_threats",
+        "default_timeout": 3600
+      },
+      {
+        "type": "assert_ipset_contains",
+        "set": "rotating_threats",
+        "ip": "198.51.100.20",
+        "present": true
+      },
+      {
+        "type": "assert_ipset_contains",
+        "set": "rotating_threats",
+        "ip": "198.51.100.21",
+        "present": true
+      },
+      {
+        "type": "assert_ipset_contains",
+        "set": "rotating_threats",
+        "ip": "198.51.100.22",
+        "present": true
+      },
+      {
+        "type": "assert_iptables_rule_exists",
+        "match": "match-set rotating_threats src",
+        "action": "DROP"
+      },
+      {
+        "type": "probe_tcp_in_from_source",
+        "source": "198.51.100.20",
+        "port": 443,
+        "expect_reachable": false
+      }
+    ]
+  },
+  {
+    "number": 24,
+    "id": "RECON_MULTIVECTOR",
+    "title": "Coordinated Multi-Vector Attack",
+    "goal": "Block 3 IPs (.10,.11,.12), block outbound ICMP, keep inbound HTTPS working",
+    "flag_inner_xor_hex": "223c302424312f33630224302e5f02330f033f033e",
+    "checks": [
+      {
+        "type": "assert_ipset_contains",
+        "set": "attack_sources",
+        "ip": "203.0.113.10",
+        "present": true
+      },
+      {
+        "type": "assert_ipset_contains",
+        "set": "attack_sources",
+        "ip": "203.0.113.11",
+        "present": true
+      },
+      {
+        "type": "assert_ipset_contains",
+        "set": "attack_sources",
+        "ip": "203.0.113.12",
+        "present": true
+      },
+      {
+        "type": "assert_iptables_rule_exists",
+        "match": "match-set attack_sources src",
+        "action": "DROP"
+      },
+      {
+        "type": "probe_tcp_in_from_source",
+        "source": "203.0.113.10",
+        "port": 22,
+        "expect_reachable": false
+      },
+      {
+        "type": "probe_icmp_out",
+        "expect_reachable": false
+      },
+      {
+        "type": "probe_tcp_in_from_source",
+        "source": "1.1.1.1",
+        "port": 443,
+        "expect_reachable": true
+      }
+    ]
+  },
+  {
+    "number": 25,
+    "id": "RECON_BEHAVIORAL_DETECT",
+    "title": "Behavioral Scan Detection",
+    "goal": "Create 'scan_detected' with 14400s timeout, configure scan detection (10 ports in 30s), bind to INPUT DROP",
+    "flag_inner_xor_hex": "0103275d3c2c31302e5f02332430030234303c333f5f3d0634303c2f33",
+    "checks": [
+      {
+        "type": "assert_ipset_exists",
+        "name": "scan_detected",
+        "default_timeout": 14400
+      },
+      {
+        "type": "assert_scan_detection_config",
+        "threshold_ports": 10,
+        "window_seconds": 30
+      },
+      {
+        "type": "assert_iptables_rule_exists",
+        "match": "match-set scan_detected src",
+        "action": "DROP"
+      },
+      {
+        "type": "simulate_port_scan",
+        "ports": [21, 22, 23, 25, 80, 110, 143, 443, 3306, 3389, 5900],
+        "expect_detection": true
+      },
+      {
+        "type": "assert_ipset_contains_post_scan",
+        "set": "scan_detected",
+        "attacker_ip": "simulated",
+        "present": true
+      }
     ]
   }
 ]

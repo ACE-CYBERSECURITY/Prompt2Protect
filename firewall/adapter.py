@@ -69,6 +69,27 @@ def require_eval():
     token = request.headers.get("X-EVAL-TOKEN", "")
     return bool(EVAL_TOKEN) and token == EVAL_TOKEN
 
+def ensure_ipset(name: str, timeout_seconds: int | None = None):
+    """Ensure an ipset exists. If it already exists, do nothing (idempotent)."""
+    try:
+        run(["ipset", "list", name])
+        # if set exists, we won't re-create; timeout changes are not applied retroactively
+        return
+    except subprocess.CalledProcessError:
+        pass
+    
+    cmd = ["ipset", "create", name, "hash:ip"]
+    if timeout_seconds is not None:
+        cmd += ["timeout", str(int(timeout_seconds))]
+    
+    # Handle race condition - set might be created between check and create
+    try:
+        run(cmd)
+    except subprocess.CalledProcessError:
+        # Set already exists (created by concurrent request) - ignore error
+        pass
+
+
 def ip_norm(s: str) -> str:
     return str(ipaddress.ip_address(s))
 
@@ -147,37 +168,40 @@ def bootstrap():
     run(["iptables", "-P", "OUTPUT", "ACCEPT"])
     run(["iptables", "-P", "FORWARD", "ACCEPT"])
 
-    for s in (IN_ALLOW, IN_BLOCK, OUT_ALLOW, OUT_BLOCK, QUARANTINE_SRC, SSH_BAN_SRC):
+    # Destroy old sets (if exist)
+    for s in [IN_ALLOW, IN_BLOCK, OUT_ALLOW, OUT_BLOCK, QUARANTINE_SRC, SSH_BAN_SRC]:
         try:
             run(["ipset", "destroy", s])
         except subprocess.CalledProcessError:
             pass
-        run(["ipset", "create", s, "hash:ip"])
 
-    # baseline safety rules
+    # Create baseline sets WITH timeout support (0 = optional per-entry)
+    for s in [IN_ALLOW, IN_BLOCK, OUT_ALLOW, OUT_BLOCK, QUARANTINE_SRC]:
+        run(["ipset", "create", s, "hash:ip", "timeout", "0"])
+    
+    # SSH ban set with default 30min timeout
+    run(["ipset", "create", SSH_BAN_SRC, "hash:ip", "timeout", "1800"])
+
+    # Baseline safety rules...
     insert_rule_top("INPUT", ["-p", "tcp", "--dport", str(API_PORT), "-j", "ACCEPT"])
     insert_rule_top("INPUT", ["-m", "conntrack", "--ctstate", "ESTABLISHED,RELATED", "-j", "ACCEPT"])
     insert_rule_top("OUTPUT", ["-m", "conntrack", "--ctstate", "ESTABLISHED,RELATED", "-j", "ACCEPT"])
     insert_rule_top("OUTPUT", ["-o", "lo", "-j", "ACCEPT"])
 
-    # baseline ipset infra
+    # Baseline ipset infra
     ensure_rule("INPUT", ["-m", "set", "--match-set", IN_ALLOW, "src", "-j", "ACCEPT"])
     ensure_rule("INPUT", ["-m", "set", "--match-set", IN_BLOCK, "src", "-j", "DROP"])
     ensure_rule("INPUT", ["-m", "set", "--match-set", QUARANTINE_SRC, "src", "-j", "DROP"])
     ensure_rule("INPUT", ["-m", "set", "--match-set", SSH_BAN_SRC, "src", "-j", "DROP"])
-
     ensure_rule("OUTPUT", ["-m", "set", "--match-set", OUT_ALLOW, "dst", "-j", "ACCEPT"])
     ensure_rule("OUTPUT", ["-m", "set", "--match-set", OUT_BLOCK, "dst", "-j", "DROP"])
 
-    # reset stateful configs
     TIME_WINDOW["start"] = None
     TIME_WINDOW["stop"] = None
     TIME_WINDOW["tz"] = "kerneltz"
-
     SSH_PROTECT["enabled"] = False
-
-    # clear tc if any (best-effort)
     tc_clear_best_effort()
+
 
 def parse_ipset_members(ipset_list_text: str) -> dict:
     sets = {}
@@ -202,12 +226,10 @@ def parse_ipset_members(ipset_list_text: str) -> dict:
 def parse_participant_changes(iptables_s: str) -> dict:
     in_policy = None
     out_policy = None
-
     out_allow_ports, out_block_ports = [], []
     in_allow_ports, in_block_ports = [], []
     out_icmp_block = False
     in_icmp_block = False
-
     time_rules = []  # capture rules that include -m time
 
     for line in iptables_s.splitlines():
@@ -215,6 +237,7 @@ def parse_participant_changes(iptables_s: str) -> dict:
         if not line:
             continue
 
+        # Parse policies
         if line.startswith("-P INPUT "):
             in_policy = line.split()[-1]
             continue
@@ -222,12 +245,15 @@ def parse_participant_changes(iptables_s: str) -> dict:
             out_policy = line.split()[-1]
             continue
 
+        # Skip baseline infrastructure rules
         if any(line == fp for fp in BASELINE_RULE_FINGERPRINTS):
             continue
 
+        # Capture time-based rules
         if "-m time" in line:
             time_rules.append(line)
 
+        # ICMP blocking
         if line.startswith("-A OUTPUT ") and "-p icmp" in line and "-j DROP" in line:
             out_icmp_block = True
             continue
@@ -235,10 +261,19 @@ def parse_participant_changes(iptables_s: str) -> dict:
             in_icmp_block = True
             continue
 
-        m = re.search(r"^-A (INPUT|OUTPUT) .* -p (tcp|udp) .* --dport (\d+).* -j (ACCEPT|DROP)", line)
+        # PORT RULES - More flexible regex
+        # Matches: -A INPUT/OUTPUT ... -p tcp/udp ... --dport PORT ... -j ACCEPT/DROP
+        # Handles variations like: -m conntrack, -m time, etc. between components
+        m = re.search(r'^-A\s+(INPUT|OUTPUT)\s+.*?-p\s+(tcp|udp)\s+.*?--dport\s+(\d+)\s+.*?-j\s+(ACCEPT|DROP)', line)
         if m:
             chain, proto, port, target = m.group(1), m.group(2), int(m.group(3)), m.group(4)
+            
+            # Skip API port protection rule (already in baseline)
+            if port == API_PORT:
+                continue
+            
             entry = {"protocol": proto, "port": port}
+            
             if chain == "OUTPUT" and target == "ACCEPT":
                 out_allow_ports.append(entry)
             elif chain == "OUTPUT" and target == "DROP":
@@ -248,6 +283,30 @@ def parse_participant_changes(iptables_s: str) -> dict:
             elif chain == "INPUT" and target == "DROP":
                 in_block_ports.append(entry)
             continue
+
+    def uniq(items):
+        seen = set()
+        out = []
+        for x in items:
+            k = (x["protocol"], x["port"])
+            if k in seen:
+                continue
+            seen.add(k)
+            out.append(x)
+        return out
+
+    return {
+        "policies": {"INPUT": in_policy, "OUTPUT": out_policy},
+        "ports": {
+            "input_allow": uniq(in_allow_ports),
+            "input_block": uniq(in_block_ports),
+            "output_allow": uniq(out_allow_ports),
+            "output_block": uniq(out_block_ports),
+        },
+        "icmp": {"input_blocked": in_icmp_block, "output_blocked": out_icmp_block},
+        "time_rules": time_rules,
+    }
+
 
     def uniq(items):
         seen = set()
@@ -330,6 +389,26 @@ def status_summary():
     ips = run(["ipset", "list"])
     ipt_summary = parse_participant_changes(ipt)
     ipset_members = parse_ipset_members(ips)
+    
+    # Build dynamic ipsets dict - include ALL sets that exist
+    ipsets_output = {}
+    
+    # Always include baseline sets (even if empty)
+    baseline_sets = [IN_ALLOW, IN_BLOCK, OUT_ALLOW, OUT_BLOCK, QUARANTINE_SRC, SSH_BAN_SRC]
+    for set_name in baseline_sets:
+        ipsets_output[set_name] = {
+            "name": set_name,
+            "members": ipset_members.get(set_name, [])
+        }
+    
+    # Add any OTHER sets that exist (like "rotating_threats", "demo_blocklist", etc.)
+    for set_name, members in ipset_members.items():
+        if set_name not in baseline_sets:
+            ipsets_output[set_name] = {
+                "name": set_name,
+                "members": members
+            }
+    
     return jsonify(
         ok=True,
         policies=ipt_summary["policies"],
@@ -340,14 +419,7 @@ def status_summary():
         ssh_protect=SSH_PROTECT,
         tc_profiles=TC_PROFILES,
         tc_active=TC_ACTIVE,
-        ipsets={
-            "IN_ALLOW": {"name": IN_ALLOW, "members": ipset_members.get(IN_ALLOW, [])},
-            "IN_BLOCK": {"name": IN_BLOCK, "members": ipset_members.get(IN_BLOCK, [])},
-            "OUT_ALLOW": {"name": OUT_ALLOW, "members": ipset_members.get(OUT_ALLOW, [])},
-            "OUT_BLOCK": {"name": OUT_BLOCK, "members": ipset_members.get(OUT_BLOCK, [])},
-            "QUARANTINE_SRC": {"name": QUARANTINE_SRC, "members": ipset_members.get(QUARANTINE_SRC, [])},
-            "SSH_BAN_SRC": {"name": SSH_BAN_SRC, "members": ipset_members.get(SSH_BAN_SRC, [])},
-        },
+        ipsets=ipsets_output,  # Now includes ALL ipsets dynamically
         note="Participant changes only: baseline safety/infra rules hidden; IP set members shown; policies shown."
     )
 
@@ -470,6 +542,44 @@ def output_unblacklist_ip():
     ipset_del(OUT_BLOCK, ip)
     return ok("removed from output blocklist", ip=ip)
 
+
+@app.post("/output/allow_port_to_ip")
+def output_allow_port_to_ip():
+    """Allow OUTPUT to specific IP:port combination"""
+    data = request.get_json(force=True, silent=True) or {}
+    try:
+        port = port_norm(data.get("port"))
+        proto = proto_norm(data.get("protocol"))
+        ip = ip_norm(data.get("ip"))
+        
+        ensure_rule("OUTPUT", [
+            "-d", ip,
+            "-p", proto,
+            "--dport", str(port),
+            "-j", "ACCEPT"
+        ])
+        return ok(f"allowed OUTPUT {proto}/{port} to {ip}", ip=ip, port=port, protocol=proto)
+    except Exception as e:
+        return fail(str(e))
+
+
+@app.post("/output/block_port_to_others")
+def output_block_port_to_others():
+    """Block OUTPUT to a port for all destinations not explicitly allowed"""
+    data = request.get_json(force=True, silent=True) or {}
+    try:
+        port = port_norm(data.get("port"))
+        proto = proto_norm(data.get("protocol"))
+        
+        ensure_rule("OUTPUT", [
+            "-p", proto,
+            "--dport", str(port),
+            "-j", "DROP"
+        ])
+        return ok(f"blocked OUTPUT {proto}/{port} to all others", port=port, protocol=proto)
+    except Exception as e:
+        return fail(str(e))
+
 # ------------------------
 # Existing INPUT endpoints (kept)
 # ------------------------
@@ -588,6 +698,52 @@ def api_ipset_remove_ip():
         return fail(str(e))
     ipset_del(name, ip)
     return ok("ip removed", name=name, ip=ip)
+
+@app.post("/input/allow_port_from_subnet")
+def input_allow_port_from_subnet():
+    """Allow INPUT from a subnet to a specific port"""
+    data = request.get_json(force=True, silent=True) or {}
+    try:
+        port = port_norm(data.get("port"))
+        proto = proto_norm(data.get("protocol"))
+        subnet = data.get("subnet")  # e.g., "192.168.50.0/24"
+        
+        # Validate CIDR
+        ipaddress.ip_network(subnet)
+        
+        ensure_rule("INPUT", [
+            "-s", subnet,
+            "-p", proto,
+            "--dport", str(port),
+            "-j", "ACCEPT"
+        ])
+        return ok(f"allowed INPUT from {subnet} to {proto}/{port}", subnet=subnet, port=port, protocol=proto)
+    except Exception as e:
+        return fail(str(e))
+
+
+@app.post("/input/block_port_from_subnet")
+def input_block_port_from_subnet():
+    """Block INPUT from a subnet to a specific port"""
+    data = request.get_json(force=True, silent=True) or {}
+    try:
+        port = port_norm(data.get("port"))
+        proto = proto_norm(data.get("protocol"))
+        subnet = data.get("subnet")  # e.g., "192.168.50.100/30"
+        
+        # Validate CIDR
+        ipaddress.ip_network(subnet)
+        
+        # INSERT at top (before allow rules)
+        insert_rule_top("INPUT", [
+            "-s", subnet,
+            "-p", proto,
+            "--dport", str(port),
+            "-j", "DROP"
+        ])
+        return ok(f"blocked INPUT from {subnet} to {proto}/{port}", subnet=subnet, port=port, protocol=proto)
+    except Exception as e:
+        return fail(str(e))
 
 # ------------------------
 # Bind sets to enforcement (new primitives)
@@ -840,6 +996,62 @@ def eval_dns_lookup():
         return jsonify(ok=True, name=name, ips=ips)
     except Exception as e:
         return jsonify(ok=True, name=name, ips=[], error=str(e))
+
+# ADD THESE AFTER /eval/dns_lookup (around line 900)
+
+@app.post("/eval/icmp_probe")
+def eval_icmp_probe():
+    """Test if ICMP (ping) works - evaluator only"""
+    if not require_eval():
+        return fail("unauthorized", 403)
+    
+    data = request.get_json(force=True, silent=True) or {}
+    host = data.get("host", "8.8.8.8")
+    
+    try:
+        result = subprocess.run(
+            ["ping", "-c", "1", "-W", "2", host],
+            capture_output=True,
+            timeout=3
+        )
+        reachable = (result.returncode == 0)
+        return jsonify(ok=True, reachable=reachable, host=host)
+    except Exception as e:
+        return jsonify(ok=True, reachable=False, host=host, error=str(e))
+
+
+@app.post("/eval/udp_probe")
+def eval_udp_probe():
+    """Test UDP connectivity (for DNS tunneling challenge) - evaluator only"""
+    if not require_eval():
+        return fail("unauthorized", 403)
+    
+    data = request.get_json(force=True, silent=True) or {}
+    host = data.get("host")
+    port = int(data.get("port", 53))
+    
+    try:
+        # Simple UDP test - send packet and check if we can reach
+        import socket
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        sock.settimeout(2.0)
+        
+        # For DNS, send a simple query
+        if port == 53:
+            # Minimal DNS query for "test.com"
+            dns_query = b'\x00\x01\x01\x00\x00\x01\x00\x00\x00\x00\x00\x00\x04test\x03com\x00\x00\x01\x00\x01'
+            sock.sendto(dns_query, (host, port))
+            data, _ = sock.recvfrom(512)
+            sock.close()
+            return jsonify(ok=True, reachable=True, host=host, port=port)
+        else:
+            # Generic UDP probe
+            sock.sendto(b"\x00" * 10, (host, port))
+            sock.recvfrom(1024)
+            sock.close()
+            return jsonify(ok=True, reachable=True, host=host, port=port)
+    except Exception as e:
+        return jsonify(ok=True, reachable=False, host=host, port=port, error=str(e))
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=8080)
