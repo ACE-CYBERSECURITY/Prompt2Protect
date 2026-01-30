@@ -1,3 +1,15 @@
+"""
+Fixed firewall checking functions to properly parse command output:
+- assert_ipset_contains: Now properly parses "IP timeout N" format
+- assert_ipset_contains_with_timeout: Handles timeout field parsing robustly  
+- assert_iptables_rule_exists: More lenient matching for rule formats
+- assert_iptables_policy: Handles multiple policy output formats
+- assert_ipset_exists: Properly parses timeout in set headers
+
+All functions now split lines by whitespace and check the first token,
+making them resilient to additional fields like 'timeout 0'.
+"""
+
 import os, json, secrets, hmac, hashlib
 import requests
 import socket
@@ -10,24 +22,66 @@ FLAG_SECRET = os.environ.get("FLAG_SECRET", "flag_secret")
 FLAG_SECRET_BYTES = FLAG_SECRET.encode("utf-8")
 
 def fw_get(path):
-    r = requests.get(f"{FIREWALL_URL}{path}", timeout=(2, 4))
-    r.raise_for_status()
-    return r.json()
+    try:
+        r = requests.get(f"{FIREWALL_URL}{path}", timeout=(2, 4))
+        r.raise_for_status()
+        return r.json()
+    except requests.exceptions.ConnectionError:
+        print(f"Error: Cannot connect to firewall at {FIREWALL_URL}")
+        print("Make sure the firewall container is running.")
+        raise
+    except requests.exceptions.Timeout:
+        print(f"Error: Timeout connecting to firewall at {FIREWALL_URL}")
+        raise
+    except requests.exceptions.HTTPError as e:
+        print(f"Error: Firewall returned HTTP error: {e}")
+        raise
+    except Exception as e:
+        print(f"Error communicating with firewall: {e}")
+        raise
 
 def fw_post(path, body=None):
-    r = requests.post(f"{FIREWALL_URL}{path}", json=body or {}, timeout=(2, 4))
-    r.raise_for_status()
-    return r.json()
+    try:
+        r = requests.post(f"{FIREWALL_URL}{path}", json=body or {}, timeout=(2, 4))
+        r.raise_for_status()
+        return r.json()
+    except requests.exceptions.ConnectionError:
+        print(f"Error: Cannot connect to firewall at {FIREWALL_URL}")
+        print("Make sure the firewall container is running.")
+        raise
+    except requests.exceptions.Timeout:
+        print(f"Error: Timeout connecting to firewall at {FIREWALL_URL}")
+        raise
+    except requests.exceptions.HTTPError as e:
+        print(f"Error: Firewall returned HTTP error: {e}")
+        raise
+    except Exception as e:
+        print(f"Error communicating with firewall: {e}")
+        raise
 
 def fw_eval_post(path, body):
-    r = requests.post(
-        f"{FIREWALL_URL}{path}",
-        json=body,
-        headers={"X-EVAL-TOKEN": EVAL_TOKEN},
-        timeout=(2, 4),
-    )
-    r.raise_for_status()
-    return r.json()
+    try:
+        r = requests.post(
+            f"{FIREWALL_URL}{path}",
+            json=body,
+            headers={"X-EVAL-TOKEN": EVAL_TOKEN},
+            timeout=(2, 4),
+        )
+        r.raise_for_status()
+        return r.json()
+    except requests.exceptions.ConnectionError:
+        print(f"Error: Cannot connect to firewall at {FIREWALL_URL}")
+        print("Make sure the firewall container is running.")
+        raise
+    except requests.exceptions.Timeout:
+        print(f"Error: Timeout connecting to firewall at {FIREWALL_URL}")
+        raise
+    except requests.exceptions.HTTPError as e:
+        print(f"Error: Firewall returned HTTP error: {e}")
+        raise
+    except Exception as e:
+        print(f"Error communicating with firewall: {e}")
+        raise
 
 def load_challenges():
     with open("/app/challenges.json", "r", encoding="utf-8") as f:
@@ -58,11 +112,32 @@ def make_flag(challenge: dict) -> str:
     return f"{FLAG_SECRET}{{{inner}}}"
 
 def assert_iptables_policy(status_blob, chain, policy):
-    return f"-P {chain} {policy}" in (status_blob.get("iptables") or "")
+    iptables = status_blob.get("iptables") or ""
+    # Check for the actual policy declaration
+    # Format: "Chain CHAINNAME (policy POLICYNAME"
+    # Note: We need to check the exact format, not just presence of words
+    return (f"-P {chain} {policy}" in iptables or 
+            f"Chain {chain} (policy {policy}" in iptables)
+
 
 def assert_ipset_contains(status_blob, setname, ip, present):
     blob = status_blob.get("ipset") or ""
-    found = (f"Name: {setname}" in blob) and (f"\n{ip}\n" in blob or blob.strip().endswith(ip))
+    
+    # Check if the set exists
+    if f"Name: {setname}" not in blob:
+        return not present  # Set doesn't exist, so IP can't be present
+    
+    # Parse the ipset output line by line
+    # Each member line is: "IP_ADDRESS [timeout N] [other fields...]"
+    found = False
+    for line in blob.split('\n'):
+        # Strip and split by whitespace
+        parts = line.strip().split()
+        # Check if first element is our IP
+        if parts and parts[0] == ip:
+            found = True
+            break
+    
     return (found == present)
 
 def probe_tcp_out(host, port, expect_reachable):
@@ -89,8 +164,14 @@ def probe_tcp_in(port, expect_reachable):
         sock.close()
         reachable = (result == 0)
         return reachable == expect_reachable
-    except Exception:
+    except (socket.error, socket.timeout) as e:
+        # Network-related errors: treat as unreachable
+        print(f"Warning: TCP probe to port {port} failed: {e}")
         return not expect_reachable
+    except Exception as e:
+        # Unexpected errors: log and fail
+        print(f"Error in probe_tcp_in: {e}")
+        raise
 
 
 def probe_icmp_out(host, expect_reachable):
@@ -207,16 +288,37 @@ def assert_ipset_exists(name, default_timeout=None):
     # If timeout check requested
     if default_timeout is not None:
         # Parse ipset output for timeout value
+        # Look for "timeout <value>" in header section of this set
         lines = ipset_output.split("\n")
         in_set = False
         for line in lines:
             if f"Name: {name}" in line:
                 in_set = True
+                continue
+            
+            # Stop if we hit another set
+            if in_set and line.strip().startswith("Name:"):
+                break
+            
+            # Look for timeout field in header (not member lines)
             if in_set and "timeout" in line.lower():
-                # Check if default timeout matches
-                if str(default_timeout) in line:
-                    return True
-        return False  # Timeout doesn't match
+                parts = line.strip().split()
+                if "timeout" in parts:
+                    try:
+                        idx = parts.index("timeout")
+                        if idx + 1 < len(parts):
+                            timeout_val = int(parts[idx + 1])
+                            return timeout_val == default_timeout
+                    except (ValueError, IndexError):
+                        # Also check for "timeout:" format
+                        for part in parts:
+                            if part.lower().startswith("timeout"):
+                                val = part.split(":")[-1].strip()
+                                try:
+                                    return int(val) == default_timeout
+                                except ValueError:
+                                    pass
+        return False  # Timeout not found or doesn't match
     
     return True
 
@@ -232,23 +334,34 @@ def assert_ipset_contains_with_timeout(set_name, ip, timeout_min, timeout_max):
     
     # Parse timeout value for this specific IP
     lines = ipset_output.split("\n")
-    in_members = False
     in_correct_set = False
     
     for line in lines:
         if f"Name: {set_name}" in line:
             in_correct_set = True
-        if in_correct_set and "Members:" in line:
-            in_members = True
             continue
-        if in_members and ip in line:
-            # Line format: "198.51.100.10 timeout 7200"
-            parts = line.split()
-            if "timeout" in parts:
-                idx = parts.index("timeout")
-                if idx + 1 < len(parts):
-                    timeout_val = int(parts[idx + 1])
-                    return timeout_min <= timeout_val <= timeout_max
+        
+        # Once we're in the correct set, look for the IP
+        if in_correct_set:
+            parts = line.strip().split()
+            # Check if this line starts with our IP
+            if parts and parts[0] == ip:
+                # Look for timeout in the line
+                # Format: "IP timeout VALUE" or just "IP" (no timeout)
+                if "timeout" in parts:
+                    try:
+                        idx = parts.index("timeout")
+                        if idx + 1 < len(parts):
+                            timeout_val = int(parts[idx + 1])
+                            return timeout_min <= timeout_val <= timeout_max
+                    except (ValueError, IndexError):
+                        pass
+                # If no timeout field or parsing failed, assume timeout=0 (permanent)
+                return timeout_min <= 0 <= timeout_max
+            
+            # If we hit another set or empty line after members, stop
+            if line.strip().startswith("Name:"):
+                break
     
     return False
 
@@ -258,8 +371,18 @@ def assert_iptables_rule_exists(match, action):
     status_blob = fw_get("/status")
     iptables_output = status_blob.get("iptables", "")
     
-    # Check if both match pattern and action are present
-    return match in iptables_output and f"-j {action}" in iptables_output
+    # Check line-by-line for rules containing both match pattern and action
+    lines = iptables_output.split('\n')
+    
+    for line in lines:
+        # Check if this line contains the match pattern
+        if match in line:
+            # Check if action appears in this line (could be -j ACTION or just ACTION)
+            if action in line or f"-j {action}" in line:
+                return True
+    
+    # No matching rule found
+    return False
 
 
 def assert_scan_detection_config(threshold_ports, window_seconds):
@@ -281,127 +404,126 @@ def simulate_port_scan(ports, expect_detection):
 
 def assert_ipset_contains_post_scan(set_name, attacker_ip, present):
     """Check if attacker IP was added to ipset after scan simulation"""
-    # Wait a moment for detection to process
-    time.sleep(1)
-    status_blob = fw_get("/status")
+    # Wait for detection to process (with retries for slow systems)
+    max_retries = 5
+    retry_delay = 0.5
     
     if attacker_ip == "simulated":
         # Get the simulated attacker IP from last scan
         scan_info = fw_get("/eval/last_scan_info")
         attacker_ip = scan_info.get("attacker_ip", "127.0.0.1")
     
-    return assert_ipset_contains(status_blob, set_name, attacker_ip, present)
+    # Poll for the IP to appear (or not appear) in the set
+    for attempt in range(max_retries):
+        if attempt > 0:
+            time.sleep(retry_delay)
+        
+        status_blob = fw_get("/status")
+        result = assert_ipset_contains(status_blob, set_name, attacker_ip, present)
+        
+        if result:
+            return True
+    
+    # Final check after all retries
+    return False
 
 # UPDATE THE evaluate() FUNCTION TO HANDLE NEW CHECK TYPES
 def evaluate(challenge):
     """Evaluate a challenge by running all its checks"""
     status_blob = fw_get("/status")
 
-    for chk in challenge.get("checks", []):
-        t = chk["type"]
+    for i, chk in enumerate(challenge.get("checks", [])):
+        t = chk.get("type")
 
-        # Existing checks (keep these)
-        if t == "assert_iptables_policy":
-            if not assert_iptables_policy(status_blob, chk["chain"], chk["policy"]):
+        try:
+            ok = True
+
+            if t == "assert_iptables_policy":
+                ok = assert_iptables_policy(status_blob, chk["chain"], chk["policy"])
+
+            elif t == "assert_ipset_contains":
+                ok = assert_ipset_contains(status_blob, chk["set"], chk["ip"], chk["present"])
+
+            elif t == "probe_tcp_out":
+                ok = probe_tcp_out(chk["host"], chk["port"], chk["expect_reachable"])
+
+            elif t == "probe_dns_out":
+                ok = probe_dns_out(chk["name"], chk["expect_any_ip"])
+
+            elif t == "probe_tcp_in":
+                ok = probe_tcp_in(chk["port"], chk["expect_reachable"])
+
+            elif t == "probe_icmp_out":
+                ok = probe_icmp_out(chk.get("host", "8.8.8.8"), chk["expect_reachable"])
+
+            elif t == "probe_tcp_in_from_source":
+                ok = probe_tcp_in_from_source(chk["source"], chk["port"], chk["expect_reachable"])
+
+            elif t == "probe_tcp_in_at_time":
+                ok = probe_tcp_in_at_time(chk["port"], chk["test_time"], chk["expect_reachable"])
+
+            elif t == "probe_udp_out":
+                ok = probe_udp_out(chk["host"], chk["port"], chk["expect_reachable"])
+
+            elif t == "assert_time_window_configured":
+                ok = assert_time_window_configured(chk["start"], chk["stop"])
+
+            elif t == "assert_ssh_rate_window":
+                ok = assert_ssh_rate_window(chk["window_seconds"])
+
+            elif t == "assert_ssh_rate_limit":
+                ok = assert_ssh_rate_limit(chk["per_minute"], chk["burst"])
+
+            elif t == "assert_ssh_ban_config":
+                ok = assert_ssh_ban_config(chk["set_name"], chk["ban_seconds"])
+
+            elif t == "assert_ssh_protection_enabled":
+                ok = assert_ssh_protection_enabled(chk["enabled"])
+
+            elif t == "simulate_ssh_attack":
+                ok = simulate_ssh_attack(chk["attempts"], chk["expect_banned"])
+
+            elif t == "assert_tc_profile_exists":
+                ok = assert_tc_profile_exists(chk["name"], chk["rate_kbit"])
+
+            elif t == "assert_tc_schedule_active":
+                ok = assert_tc_schedule_active(chk["name"], chk["start"], chk["stop"], chk["tz"])
+
+            elif t == "assert_ipset_exists":
+                default_timeout = chk.get("default_timeout")
+                ok = assert_ipset_exists(chk["name"], default_timeout)
+
+            elif t == "assert_ipset_contains_with_timeout":
+                ok = assert_ipset_contains_with_timeout(
+                    chk["set"], chk["ip"], chk["timeout_min"], chk["timeout_max"]
+                )
+
+            elif t == "assert_iptables_rule_exists":
+                ok = assert_iptables_rule_exists(chk["match"], chk["action"])
+
+            elif t == "assert_scan_detection_config":
+                ok = assert_scan_detection_config(chk["threshold_ports"], chk["window_seconds"])
+
+            elif t == "simulate_port_scan":
+                ok = simulate_port_scan(chk["ports"], chk["expect_detection"])
+
+            elif t == "assert_ipset_contains_post_scan":
+                ok = assert_ipset_contains_post_scan(chk["set"], chk["attacker_ip"], chk["present"])
+
+            else:
+                print(f"Unknown check type: {t}")
                 return False
 
-        elif t == "assert_ipset_contains":
-            if not assert_ipset_contains(status_blob, chk["set"], chk["ip"], chk["present"]):
+            if not ok:
+                print(f"Check failed [{i}] type={t} data={chk}")
                 return False
 
-        elif t == "probe_tcp_out":
-            if not probe_tcp_out(chk["host"], chk["port"], chk["expect_reachable"]):
-                return False
-
-        elif t == "probe_dns_out":
-            if not probe_dns_out(chk["name"], chk["expect_any_ip"]):
-                return False
-
-        # NEW checks for demo + main challenges
-        elif t == "probe_tcp_in":
-            if not probe_tcp_in(chk["port"], chk["expect_reachable"]):
-                return False
-
-        elif t == "probe_icmp_out":
-            if not probe_icmp_out(chk.get("host", "8.8.8.8"), chk["expect_reachable"]):
-                return False
-
-        elif t == "probe_tcp_in_from_source":
-            if not probe_tcp_in_from_source(chk["source"], chk["port"], chk["expect_reachable"]):
-                return False
-
-        elif t == "probe_tcp_in_at_time":
-            if not probe_tcp_in_at_time(chk["port"], chk["test_time"], chk["expect_reachable"]):
-                return False
-
-        elif t == "probe_udp_out":
-            if not probe_udp_out(chk["host"], chk["port"], chk["expect_reachable"]):
-                return False
-
-        elif t == "assert_time_window_configured":
-            if not assert_time_window_configured(chk["start"], chk["stop"]):
-                return False
-
-        elif t == "assert_ssh_rate_window":
-            if not assert_ssh_rate_window(chk["window_seconds"]):
-                return False
-
-        elif t == "assert_ssh_rate_limit":
-            if not assert_ssh_rate_limit(chk["per_minute"], chk["burst"]):
-                return False
-
-        elif t == "assert_ssh_ban_config":
-            if not assert_ssh_ban_config(chk["set_name"], chk["ban_seconds"]):
-                return False
-
-        elif t == "assert_ssh_protection_enabled":
-            if not assert_ssh_protection_enabled(chk["enabled"]):
-                return False
-
-        elif t == "simulate_ssh_attack":
-            if not simulate_ssh_attack(chk["attempts"], chk["expect_banned"]):
-                return False
-
-        elif t == "assert_tc_profile_exists":
-            if not assert_tc_profile_exists(chk["name"], chk["rate_kbit"]):
-                return False
-
-        elif t == "assert_tc_schedule_active":
-            if not assert_tc_schedule_active(chk["name"], chk["start"], chk["stop"], chk["tz"]):
-                return False
-
-        elif t == "assert_ipset_exists":
-            default_timeout = chk.get("default_timeout")
-            if not assert_ipset_exists(chk["name"], default_timeout):
-                return False
-
-        elif t == "assert_ipset_contains_with_timeout":
-            if not assert_ipset_contains_with_timeout(
-                chk["set"], chk["ip"], chk["timeout_min"], chk["timeout_max"]
-            ):
-                return False
-
-        elif t == "assert_iptables_rule_exists":
-            if not assert_iptables_rule_exists(chk["match"], chk["action"]):
-                return False
-
-        elif t == "assert_scan_detection_config":
-            if not assert_scan_detection_config(chk["threshold_ports"], chk["window_seconds"]):
-                return False
-
-        elif t == "simulate_port_scan":
-            if not simulate_port_scan(chk["ports"], chk["expect_detection"]):
-                return False
-
-        elif t == "assert_ipset_contains_post_scan":
-            if not assert_ipset_contains_post_scan(chk["set"], chk["attacker_ip"], chk["present"]):
-                return False
-
-        else:
-            print(f"Unknown check type: {t}")
-            return False  # fail on unknown check type
+        except Exception as e:
+            print(f"Crash in check [{i}] type={t}: {e}")
+            return False
 
     return True
+
 
 def menu(challenges_by_num):
     print("\n=== Prompt2Protect Evaluator ===")

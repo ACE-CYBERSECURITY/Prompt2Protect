@@ -162,45 +162,63 @@ def delete_rule(chain: str, rule_args: list[str]):
         pass
 
 def bootstrap():
+    # ------------------------
+    # Clear previous state
+    # ------------------------
     run(["iptables", "-F"])
     run(["iptables", "-X"])
+
+    # default policies
     run(["iptables", "-P", "INPUT", "ACCEPT"])
     run(["iptables", "-P", "OUTPUT", "ACCEPT"])
     run(["iptables", "-P", "FORWARD", "ACCEPT"])
 
-    # Destroy old sets (if exist)
+    # destroy sets
     for s in [IN_ALLOW, IN_BLOCK, OUT_ALLOW, OUT_BLOCK, QUARANTINE_SRC, SSH_BAN_SRC]:
         try:
             run(["ipset", "destroy", s])
         except subprocess.CalledProcessError:
             pass
 
-    # Create baseline sets WITH timeout support (0 = optional per-entry)
+    # recreate sets
     for s in [IN_ALLOW, IN_BLOCK, OUT_ALLOW, OUT_BLOCK, QUARANTINE_SRC]:
-        run(["ipset", "create", s, "hash:ip", "timeout", "0"])
-    
-    # SSH ban set with default 30min timeout
+        run(["ipset", "create", s, "hash:ip"])
     run(["ipset", "create", SSH_BAN_SRC, "hash:ip", "timeout", "1800"])
 
-    # Baseline safety rules...
-    insert_rule_top("INPUT", ["-p", "tcp", "--dport", str(API_PORT), "-j", "ACCEPT"])
-    insert_rule_top("INPUT", ["-m", "conntrack", "--ctstate", "ESTABLISHED,RELATED", "-j", "ACCEPT"])
-    insert_rule_top("OUTPUT", ["-m", "conntrack", "--ctstate", "ESTABLISHED,RELATED", "-j", "ACCEPT"])
-    insert_rule_top("OUTPUT", ["-o", "lo", "-j", "ACCEPT"])
+    # ------------------------
+    # INPUT chain (corrected order)
+    # ------------------------
+    run(["iptables", "-A", "INPUT", "-p", "tcp", "--dport", str(API_PORT), "-j", "ACCEPT"])
+    run(["iptables", "-A", "INPUT", "-m", "conntrack", "--ctstate", "ESTABLISHED,RELATED", "-j", "ACCEPT"])
 
-    # Baseline ipset infra
-    ensure_rule("INPUT", ["-m", "set", "--match-set", IN_ALLOW, "src", "-j", "ACCEPT"])
-    ensure_rule("INPUT", ["-m", "set", "--match-set", IN_BLOCK, "src", "-j", "DROP"])
-    ensure_rule("INPUT", ["-m", "set", "--match-set", QUARANTINE_SRC, "src", "-j", "DROP"])
-    ensure_rule("INPUT", ["-m", "set", "--match-set", SSH_BAN_SRC, "src", "-j", "DROP"])
-    ensure_rule("OUTPUT", ["-m", "set", "--match-set", OUT_ALLOW, "dst", "-j", "ACCEPT"])
-    ensure_rule("OUTPUT", ["-m", "set", "--match-set", OUT_BLOCK, "dst", "-j", "DROP"])
+    # **ALLOW first** to avoid blocking legitimate traffic
+    run(["iptables", "-A", "INPUT", "-m", "set", "--match-set", IN_ALLOW, "src", "-j", "ACCEPT"])
 
+    # then drop sets
+    run(["iptables", "-A", "INPUT", "-m", "set", "--match-set", IN_BLOCK, "src", "-j", "DROP"])
+    run(["iptables", "-A", "INPUT", "-m", "set", "--match-set", QUARANTINE_SRC, "src", "-j", "DROP"])
+    run(["iptables", "-A", "INPUT", "-m", "set", "--match-set", SSH_BAN_SRC, "src", "-j", "DROP"])
+
+    # ------------------------
+    # OUTPUT chain
+    # ------------------------
+    run(["iptables", "-A", "OUTPUT", "-m", "conntrack", "--ctstate", "ESTABLISHED,RELATED", "-j", "ACCEPT"])
+
+    # sets in correct order (ALLOW before DROP)
+    run(["iptables", "-A", "OUTPUT", "-m", "set", "--match-set", OUT_ALLOW, "dst", "-j", "ACCEPT"])
+    run(["iptables", "-A", "OUTPUT", "-m", "set", "--match-set", OUT_BLOCK, "dst", "-j", "DROP"])
+
+    # default policy is ACCEPT, so no catch-all needed
+
+    # ------------------------
+    # Reset states
+    # ------------------------
     TIME_WINDOW["start"] = None
     TIME_WINDOW["stop"] = None
     TIME_WINDOW["tz"] = "kerneltz"
     SSH_PROTECT["enabled"] = False
     tc_clear_best_effort()
+
 
 
 def parse_ipset_members(ipset_list_text: str) -> dict:

@@ -6,7 +6,7 @@ services:
     environment:
       - EVAL_TOKEN=${EVAL_TOKEN}
     ports:
-      - "127.0.0.1:8080:8080"
+      - "127.0.0.1:8081:8080"
     healthcheck:
       test: ["CMD", "bash", "-lc", "python3 -c \"import urllib.request; urllib.request.urlopen('http://localhost:8080/health', timeout=2).read()\""]
       interval: 5s
