@@ -382,13 +382,15 @@ def tc_should_be_active_now(start_hhmm: str, stop_hhmm: str, tz: str) -> bool:
         now = datetime.utcnow()
     else:
         now = datetime.now()
+
     now_mins = now.hour * 60 + now.minute
     s = int(start_hhmm[0:2]) * 60 + int(start_hhmm[3:5])
     e = int(stop_hhmm[0:2]) * 60 + int(stop_hhmm[3:5])
+
     if s == e:
         return True
     if s < e:
-        return s <= now_mins < ry
+        return s <= now_mins < e
     # window wraps midnight
     return now_mins >= s or now_mins < e
 
