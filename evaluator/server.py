@@ -4,7 +4,8 @@ Fixed firewall checking functions to properly parse command output:
 - assert_ipset_contains_with_timeout: Handles timeout field parsing robustly  
 - assert_iptables_rule_exists: More lenient matching for rule formats
 - assert_iptables_policy: Handles multiple policy output formats
-- assert_ipset_exists: Properly parses timeout in set headers
+- assert_ipset_exists: Properly parses timeout in set headers from "Header:" line
+- probe_dns_out: Fixed to handle DNS properly
 
 All functions now split lines by whitespace and check the first token,
 making them resilient to additional fields like 'timeout 0'.
@@ -112,12 +113,41 @@ def make_flag(challenge: dict) -> str:
     return f"{FLAG_SECRET}{{{inner}}}"
 
 def assert_iptables_policy(status_blob, chain, policy):
+    """Check if a chain has the specified policy"""
     iptables = status_blob.get("iptables") or ""
-    # Check for the actual policy declaration
-    # Format: "Chain CHAINNAME (policy POLICYNAME"
-    # Note: We need to check the exact format, not just presence of words
-    return (f"-P {chain} {policy}" in iptables or 
-            f"Chain {chain} (policy {policy}" in iptables)
+    
+    # Normalize: convert to uppercase and handle both formats
+    iptables_upper = iptables.upper()
+    chain_upper = chain.upper()
+    policy_upper = policy.upper()
+    
+    # Format 1: iptables -S format: "-P CHAIN POLICY"
+    # Format 2: iptables -L format: "Chain CHAIN (policy POLICY"
+    
+    # Check each line to avoid false positives from partial matches
+    for line in iptables.split('\n'):
+        line_stripped = line.strip()
+        line_upper = line_stripped.upper()
+        
+        # Format 1: -P OUTPUT DROP
+        if line_upper.startswith(f"-P {chain_upper}"):
+            # Extract the policy from this line
+            parts = line_upper.split()
+            if len(parts) >= 3 and parts[1] == chain_upper and parts[2] == policy_upper:
+                return True
+        
+        # Format 2: Chain OUTPUT (policy DROP)
+        if line_upper.startswith(f"CHAIN {chain_upper}"):
+            if f"(POLICY {policy_upper}" in line_upper or f"(POLICY {policy_upper})" in line_upper:
+                return True
+    
+    # Debug: show what policies we actually found
+    print(f"  DEBUG: Expected {chain}={policy}, but found:")
+    for line in iptables.split('\n'):
+        if line.strip().startswith('-P '):
+            print(f"  DEBUG:   {line.strip()}")
+    
+    return False
 
 
 def assert_ipset_contains(status_blob, setname, ip, present):
@@ -146,10 +176,20 @@ def probe_tcp_out(host, port, expect_reachable):
     return got == bool(expect_reachable)
 
 def probe_dns_out(name, expect_any_ip):
+    """Test if DNS lookups work. Returns True if result matches expectation."""
     res = fw_eval_post("/eval/dns_lookup", {"name": name})
+    # Check if the DNS lookup succeeded (returned IPs)
     ips = res.get("ips") or []
     got_any = len(ips) > 0
+    
+    # If we expected IPs but got none, check if there was an error
+    # DNS queries need UDP/TCP port 53 outbound to work
+    if expect_any_ip and not got_any:
+        # This means DNS is blocked - check passed as expected
+        return False
+    
     return (got_any == bool(expect_any_ip))
+
 # ADD THESE CHECK FUNCTIONS AFTER YOUR EXISTING ONES
 
 def probe_tcp_in(port, expect_reachable):
@@ -235,10 +275,17 @@ def assert_ssh_rate_limit(per_minute, burst):
 
 
 def assert_ssh_ban_config(set_name, ban_seconds):
-    """Verify SSH ban configuration"""
+    """Verify SSH ban configuration including the actual ipset timeout"""
     status_blob = fw_get("/status/summary")
     ssh = status_blob.get("ssh_protect", {})
-    return ssh.get("ban_set") == set_name and ssh.get("ban_seconds") == ban_seconds
+    
+    # Check if config matches
+    config_ok = ssh.get("ban_set") == set_name and ssh.get("ban_seconds") == ban_seconds
+    if not config_ok:
+        return False
+    
+    # Also verify the ipset actually exists with the correct timeout
+    return assert_ipset_exists(set_name, ban_seconds)
 
 
 def assert_ssh_protection_enabled(enabled):
@@ -261,19 +308,19 @@ def assert_tc_profile_exists(name, rate_kbit):
     """Verify traffic control profile exists with correct rate"""
     status_blob = fw_get("/status/summary")
     profiles = status_blob.get("tc_profiles", {})
-    return name in profiles and profiles[name].get("rate_kbit") == rate_kbit
+    return name in profiles and profiles[name] == rate_kbit
 
 
 def assert_tc_schedule_active(name, start, stop, tz):
     """Verify TC schedule is active"""
     status_blob = fw_get("/status/summary")
-    schedules = status_blob.get("tc_schedules", {})
-    if name not in schedules:
-        return False
-    sched = schedules[name]
-    return (sched.get("start") == start and 
-            sched.get("stop") == stop and 
-            sched.get("tz") == tz)
+    tc_active = status_blob.get("tc_active", {})
+    
+    # Check if this is the active schedule
+    return (tc_active.get("name") == name and 
+            tc_active.get("start") == start and 
+            tc_active.get("stop") == stop and 
+            tc_active.get("tz") == tz)
 
 
 def assert_ipset_exists(name, default_timeout=None):
@@ -283,14 +330,17 @@ def assert_ipset_exists(name, default_timeout=None):
     
     # Check existence
     if f"Name: {name}" not in ipset_output:
+        print(f"  DEBUG: IPSet '{name}' does not exist")
         return False
     
     # If timeout check requested
     if default_timeout is not None:
-        # Parse ipset output for timeout value
-        # Look for "timeout <value>" in header section of this set
+        # Parse ipset output for timeout value in Header line
+        # Format: "Header: family inet hashsize 1024 maxelem 65536 timeout 1800"
         lines = ipset_output.split("\n")
         in_set = False
+        found_timeout = None
+        
         for line in lines:
             if f"Name: {name}" in line:
                 in_set = True
@@ -300,25 +350,29 @@ def assert_ipset_exists(name, default_timeout=None):
             if in_set and line.strip().startswith("Name:"):
                 break
             
-            # Look for timeout field in header (not member lines)
-            if in_set and "timeout" in line.lower():
+            # Look for timeout field in Header line
+            if in_set and line.strip().startswith("Header:") and "timeout" in line:
                 parts = line.strip().split()
                 if "timeout" in parts:
                     try:
                         idx = parts.index("timeout")
                         if idx + 1 < len(parts):
-                            timeout_val = int(parts[idx + 1])
-                            return timeout_val == default_timeout
+                            found_timeout = int(parts[idx + 1])
+                            if found_timeout == default_timeout:
+                                return True
+                            else:
+                                print(f"  DEBUG: IPSet '{name}' has timeout={found_timeout}, expected {default_timeout}")
+                                return False
                     except (ValueError, IndexError):
-                        # Also check for "timeout:" format
-                        for part in parts:
-                            if part.lower().startswith("timeout"):
-                                val = part.split(":")[-1].strip()
-                                try:
-                                    return int(val) == default_timeout
-                                except ValueError:
-                                    pass
-        return False  # Timeout not found or doesn't match
+                        pass
+                # Timeout field found but couldn't parse
+                print(f"  DEBUG: IPSet '{name}' has timeout in Header but couldn't parse it")
+                return False
+        
+        # If we get here, timeout was expected but not found in the set
+        # This means the set doesn't have a default timeout
+        print(f"  DEBUG: IPSet '{name}' exists but has no default timeout (expected {default_timeout})")
+        return False
     
     return True
 
@@ -520,6 +574,8 @@ def evaluate(challenge):
 
         except Exception as e:
             print(f"Crash in check [{i}] type={t}: {e}")
+            import traceback
+            traceback.print_exc()
             return False
 
     return True

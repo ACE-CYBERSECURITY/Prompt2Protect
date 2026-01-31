@@ -35,6 +35,7 @@ SSH_PROTECT = {
 }
 
 BASELINE_RULE_FINGERPRINTS = [
+    "-A INPUT -i lo -j ACCEPT",
     f"-A INPUT -p tcp --dport {API_PORT} -j ACCEPT",
     "-A INPUT -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT",
     "-A OUTPUT -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT",
@@ -188,6 +189,7 @@ def bootstrap():
     # ------------------------
     # INPUT chain (corrected order)
     # ------------------------
+    run(["iptables", "-A", "INPUT", "-i", "lo", "-j", "ACCEPT"])
     run(["iptables", "-A", "INPUT", "-p", "tcp", "--dport", str(API_PORT), "-j", "ACCEPT"])
     run(["iptables", "-A", "INPUT", "-m", "conntrack", "--ctstate", "ESTABLISHED,RELATED", "-j", "ACCEPT"])
 
@@ -203,6 +205,7 @@ def bootstrap():
     # OUTPUT chain
     # ------------------------
     run(["iptables", "-A", "OUTPUT", "-m", "conntrack", "--ctstate", "ESTABLISHED,RELATED", "-j", "ACCEPT"])
+    run(["iptables", "-A", "OUTPUT", "-o", "lo", "-j", "ACCEPT"])
 
     # sets in correct order (ALLOW before DROP)
     run(["iptables", "-A", "OUTPUT", "-m", "set", "--match-set", OUT_ALLOW, "dst", "-j", "ACCEPT"])
