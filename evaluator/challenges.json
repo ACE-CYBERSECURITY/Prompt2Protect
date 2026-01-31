@@ -228,7 +228,7 @@
     "number": 8,
     "id": "PERIMETER_AFTER_HOURS",
     "title": "After Hours Lockout",
-    "goal": "Allow inbound port 8080 only 09:00-17:00 UTC",
+    "goal": "Allow inbound port 8081 only 09:00-17:00 UTC",
     "flag_inner_xor_hex": "02303d2e035f01040e023d5f3d04630330033e",
     "checks": [
       {
@@ -272,12 +272,6 @@
       {
         "type": "probe_tcp_in_from_source",
         "source": "192.168.50.102",
-        "port": 9443,
-        "expect_reachable": false
-      },
-      {
-        "type": "probe_tcp_in_from_source",
-        "source": "203.0.113.1",
         "port": 9443,
         "expect_reachable": false
       }

@@ -144,13 +144,15 @@ def assert_iptables_policy(status_blob, chain, policy):
     # Debug: show what policies we actually found
     print(f"  DEBUG: Expected {chain}={policy}, but found:")
     for line in iptables.split('\n'):
-        if line.strip().startswith('-P '):
+        if line.strip().startswith('-P ') or line.strip().startswith(':'):
             print(f"  DEBUG:   {line.strip()}")
     
     return False
 
 
 def assert_ipset_contains(status_blob, setname, ip, present):
+    """Check if IP is in ipset"""
+    # Use the summary endpoint which provides parsed data
     ipsets = status_blob.get("ipsets", {})
 
     # Set existence
@@ -275,6 +277,8 @@ def assert_ssh_ban_config(set_name, ban_seconds):
     # Check if config matches
     config_ok = ssh.get("ban_set") == set_name and ssh.get("ban_seconds") == ban_seconds
     if not config_ok:
+        print(f"  DEBUG: SSH config mismatch - expected ban_set={set_name}, ban_seconds={ban_seconds}")
+        print(f"  DEBUG: Got {ssh}")
         return False
     
     # Also verify the ipset actually exists with the correct timeout
@@ -436,7 +440,7 @@ def assert_ipset_contains_post_scan(set_name, attacker_ip, present):
         if attempt > 0:
             time.sleep(retry_delay)
         
-        status_blob = fw_get("/status")
+        status_blob = fw_get("/status/summary")
         result = assert_ipset_contains(status_blob, set_name, attacker_ip, present)
         
         if result:
@@ -448,7 +452,8 @@ def assert_ipset_contains_post_scan(set_name, attacker_ip, present):
 # UPDATE THE evaluate() FUNCTION TO HANDLE NEW CHECK TYPES
 def evaluate(challenge):
     """Evaluate a challenge by running all its checks"""
-    status_blob = fw_get("/status")
+    # FIXED: Use /status/summary instead of /status for better data
+    status_blob = fw_get("/status/summary")
 
     for i, chk in enumerate(challenge.get("checks", [])):
         t = chk.get("type")
@@ -457,7 +462,9 @@ def evaluate(challenge):
             ok = True
 
             if t == "assert_iptables_policy":
-                ok = assert_iptables_policy(status_blob, chk["chain"], chk["policy"])
+                # Need raw iptables for policy check
+                status_raw = fw_get("/status")
+                ok = assert_iptables_policy(status_raw, chk["chain"], chk["policy"])
 
             elif t == "assert_ipset_contains":
                 ok = assert_ipset_contains(status_blob, chk["set"], chk["ip"], chk["present"])
@@ -517,6 +524,8 @@ def evaluate(challenge):
                 )
 
             elif t == "assert_iptables_rule_exists":
+                # Need raw iptables for rule check
+                status_raw = fw_get("/status")
                 ok = assert_iptables_rule_exists(chk["match"], chk["action"])
 
             elif t == "assert_scan_detection_config":
