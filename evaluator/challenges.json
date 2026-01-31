@@ -238,13 +238,13 @@
       },
       {
         "type": "probe_tcp_in_at_time",
-        "port": 8080,
+        "port": 8081,
         "test_time": "10:00",
         "expect_reachable": true
       },
       {
         "type": "probe_tcp_in_at_time",
-        "port": 8080,
+        "port": 8081,
         "test_time": "20:00",
         "expect_reachable": false
       }

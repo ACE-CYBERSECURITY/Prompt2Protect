@@ -227,21 +227,19 @@ def bootstrap():
 def parse_ipset_members(ipset_list_text: str) -> dict:
     sets = {}
     cur = None
-    in_members = False
     for line in ipset_list_text.splitlines():
-        line = line.rstrip()
-        if line.startswith("Name: "):
+        line = line.strip()
+        if not line:
+            continue
+        if line.startswith("Name:"):
             cur = line.split("Name: ", 1)[1].strip()
             sets[cur] = []
-            in_members = False
             continue
-        if cur and line.startswith("Members:"):
-            in_members = True
+        if line.startswith("Header:"):
             continue
-        if cur and in_members:
-            if not line.strip():
-                continue
-            sets[cur].append(line.strip())
+        if cur:
+            ip = line.split()[0]  # first token is IP
+            sets[cur].append(ip)
     return sets
 
 def parse_participant_changes(iptables_s: str) -> dict:
@@ -388,7 +386,7 @@ def tc_should_be_active_now(start_hhmm: str, stop_hhmm: str, tz: str) -> bool:
     if s == e:
         return True
     if s < e:
-        return s <= now_mins < e
+        return s <= now_mins < ry
     # window wraps midnight
     return now_mins >= s or now_mins < e
 
@@ -408,28 +406,50 @@ def status():
 def status_summary():
     ipt = run(["iptables", "-S"])
     ips = run(["ipset", "list"])
+
     ipt_summary = parse_participant_changes(ipt)
     ipset_members = parse_ipset_members(ips)
-    
-    # Build dynamic ipsets dict - include ALL sets that exist
+
+    # ---- INLINE timeout parsing (no new function) ----
+    ipset_timeouts = {}
+    current = None
+    for line in ips.splitlines():
+        line = line.strip()
+        if line.startswith("Name:"):
+            current = line.split("Name:")[1].strip()
+        elif current and line.startswith("Header:") and "timeout" in line:
+            parts = line.split()
+            if "timeout" in parts:
+                idx = parts.index("timeout")
+                if idx + 1 < len(parts):
+                    try:
+                        ipset_timeouts[current] = int(parts[idx + 1])
+                    except ValueError:
+                        pass
+    # --------------------------------------------------
+
     ipsets_output = {}
-    
-    # Always include baseline sets (even if empty)
-    baseline_sets = [IN_ALLOW, IN_BLOCK, OUT_ALLOW, OUT_BLOCK, QUARANTINE_SRC, SSH_BAN_SRC]
+
+    baseline_sets = [
+        IN_ALLOW, IN_BLOCK, OUT_ALLOW, OUT_BLOCK,
+        QUARANTINE_SRC, SSH_BAN_SRC
+    ]
+
     for set_name in baseline_sets:
         ipsets_output[set_name] = {
             "name": set_name,
-            "members": ipset_members.get(set_name, [])
+            "members": ipset_members.get(set_name, []),
+            "timeout": ipset_timeouts.get(set_name)
         }
-    
-    # Add any OTHER sets that exist (like "rotating_threats", "demo_blocklist", etc.)
+
     for set_name, members in ipset_members.items():
         if set_name not in baseline_sets:
             ipsets_output[set_name] = {
                 "name": set_name,
-                "members": members
+                "members": members,
+                "timeout": ipset_timeouts.get(set_name)
             }
-    
+
     return jsonify(
         ok=True,
         policies=ipt_summary["policies"],
@@ -440,8 +460,8 @@ def status_summary():
         ssh_protect=SSH_PROTECT,
         tc_profiles=TC_PROFILES,
         tc_active=TC_ACTIVE,
-        ipsets=ipsets_output,  # Now includes ALL ipsets dynamically
-        note="Participant changes only: baseline safety/infra rules hidden; IP set members shown; policies shown."
+        ipsets=ipsets_output,
+        note="Participant changes only"
     )
 
 @app.post("/reset")
@@ -562,6 +582,117 @@ def output_unblacklist_ip():
         return fail(str(e))
     ipset_del(OUT_BLOCK, ip)
     return ok("removed from output blocklist", ip=ip)
+
+# ------------------------
+# IP range primitives (for Challenge 9)
+# ------------------------
+@app.post("/input/blacklist_ip_range")
+def input_blacklist_ip_range():
+    """Add a range of IPs to input blocklist"""
+    data = request.get_json(force=True, silent=True) or {}
+    try:
+        start_ip = ip_norm(data.get("start_ip"))
+        end_ip = ip_norm(data.get("end_ip"))
+        
+        # Convert to IP addresses for iteration
+        start = ipaddress.ip_address(start_ip)
+        end = ipaddress.ip_address(end_ip)
+        
+        if start > end:
+            return fail("start_ip must be <= end_ip")
+        
+        # Add each IP in range to blocklist
+        added = []
+        current = start
+        while current <= end:
+            ipset_add(IN_BLOCK, str(current))
+            added.append(str(current))
+            current += 1
+            
+        return ok(f"added {len(added)} IPs to input blocklist", start_ip=start_ip, end_ip=end_ip, count=len(added), ips=added)
+    except Exception as e:
+        return fail(str(e))
+
+@app.post("/output/blacklist_ip_range")
+def output_blacklist_ip_range():
+    """Add a range of IPs to output blocklist"""
+    data = request.get_json(force=True, silent=True) or {}
+    try:
+        start_ip = ip_norm(data.get("start_ip"))
+        end_ip = ip_norm(data.get("end_ip"))
+        
+        # Convert to IP addresses for iteration
+        start = ipaddress.ip_address(start_ip)
+        end = ipaddress.ip_address(end_ip)
+        
+        if start > end:
+            return fail("start_ip must be <= end_ip")
+        
+        # Add each IP in range to blocklist
+        added = []
+        current = start
+        while current <= end:
+            ipset_add(OUT_BLOCK, str(current))
+            added.append(str(current))
+            current += 1
+            
+        return ok(f"added {len(added)} IPs to output blocklist", start_ip=start_ip, end_ip=end_ip, count=len(added), ips=added)
+    except Exception as e:
+        return fail(str(e))
+
+@app.post("/input/whitelist_ip_range")
+def input_whitelist_ip_range():
+    """Add a range of IPs to input allowlist"""
+    data = request.get_json(force=True, silent=True) or {}
+    try:
+        start_ip = ip_norm(data.get("start_ip"))
+        end_ip = ip_norm(data.get("end_ip"))
+        
+        # Convert to IP addresses for iteration
+        start = ipaddress.ip_address(start_ip)
+        end = ipaddress.ip_address(end_ip)
+        
+        if start > end:
+            return fail("start_ip must be <= end_ip")
+        
+        # Add each IP in range to allowlist
+        added = []
+        current = start
+        while current <= end:
+            ipset_add(IN_ALLOW, str(current))
+            added.append(str(current))
+            current += 1
+            
+        return ok(f"added {len(added)} IPs to input allowlist", start_ip=start_ip, end_ip=end_ip, count=len(added), ips=added)
+    except Exception as e:
+        return fail(str(e))
+
+@app.post("/output/whitelist_ip_range")
+def output_whitelist_ip_range():
+    """Add a range of IPs to output allowlist"""
+    data = request.get_json(force=True, silent=True) or {}
+    try:
+        start_ip = ip_norm(data.get("start_ip"))
+        end_ip = ip_norm(data.get("end_ip"))
+        
+        # Convert to IP addresses for iteration
+        start = ipaddress.ip_address(start_ip)
+        end = ipaddress.ip_address(end_ip)
+        
+        if start > end:
+            return fail("start_ip must be <= end_ip")
+        
+        # Add each IP in range to allowlist
+        added = []
+        current = start
+        while current <= end:
+            ipset_add(OUT_ALLOW, str(current))
+            added.append(str(current))
+            current += 1
+            
+        return ok(f"added {len(added)} IPs to output allowlist", start_ip=start_ip, end_ip=end_ip, count=len(added), ips=added)
+    except Exception as e:
+        return fail(str(e))
 
 
 @app.post("/output/allow_port_to_ip")
@@ -788,6 +919,30 @@ def bind_output_drop_dst_set():
     ensure_ipset(set_name)
     ensure_rule("OUTPUT", ["-m", "set", "--match-set", set_name, "dst", "-j", "DROP"])
     return ok("bound OUTPUT drop by dst set", set_name=set_name)
+
+@app.post("/bind/output_accept_dst_set")
+def bind_output_accept_dst_set():
+    """Bind ipset so packets to IPs in the set are ACCEPTED in OUTPUT"""
+    data = request.get_json(force=True, silent=True) or {}
+    set_name = (data.get("set_name") or "").strip()
+    if not set_name:
+        return fail("missing set_name")
+    ensure_ipset(set_name)
+    # Insert at top to take precedence
+    insert_rule_top("OUTPUT", ["-m", "set", "--match-set", set_name, "dst", "-j", "ACCEPT"])
+    return ok("bound OUTPUT accept by dst set", set_name=set_name)
+
+@app.post("/bind/input_accept_src_set")
+def bind_input_accept_src_set():
+    """Bind ipset so packets from IPs in the set are ACCEPTED in INPUT"""
+    data = request.get_json(force=True, silent=True) or {}
+    set_name = (data.get("set_name") or "").strip()
+    if not set_name:
+        return fail("missing set_name")
+    ensure_ipset(set_name)
+    # Insert at top to take precedence
+    insert_rule_top("INPUT", ["-m", "set", "--match-set", set_name, "src", "-j", "ACCEPT"])
+    return ok("bound INPUT accept by src set", set_name=set_name)
 
 # ------------------------
 # Time-window primitives (new)
@@ -1019,26 +1174,79 @@ def eval_dns_lookup():
         return jsonify(ok=True, name=name, ips=[], error=str(e))
 
 # ADD THESE AFTER /eval/dns_lookup (around line 900)
+@app.post("/eval/tcp_at_time")
+def eval_tcp_at_time():
+    if not require_eval():
+        return fail("unauthorized", 403)
+
+    data = request.get_json(force=True, silent=True) or {}
+    port = int(data.get("port", 0))
+    test_time = data.get("time")  # "HH:MM"
+
+    try:
+        # No time window configured → always reachable
+        if not TIME_WINDOW["start"] or not TIME_WINDOW["stop"]:
+            return jsonify(ok=True, reachable=True)
+
+        def to_minutes(t):
+            h, m = map(int, t.split(":"))
+            return h * 60 + m
+
+        start = to_minutes(TIME_WINDOW["start"])
+        stop = to_minutes(TIME_WINDOW["stop"])
+        now = to_minutes(test_time)
+
+        # Handle normal and overnight windows
+        if start <= stop:
+            in_window = start <= now < stop
+        else:
+            # overnight (e.g. 22:00 → 06:00)
+            in_window = now >= start or now < stop
+
+        return jsonify(ok=True, reachable=in_window)
+
+    except Exception as e:
+        return jsonify(ok=True, reachable=False, error=str(e))
 
 @app.post("/eval/icmp_probe")
 def eval_icmp_probe():
-    """Test if ICMP (ping) works - evaluator only"""
     if not require_eval():
         return fail("unauthorized", 403)
-    
-    data = request.get_json(force=True, silent=True) or {}
-    host = data.get("host", "8.8.8.8")
-    
+
     try:
-        result = subprocess.run(
-            ["ping", "-c", "1", "-W", "2", host],
-            capture_output=True,
-            timeout=3
-        )
-        reachable = (result.returncode == 0)
-        return jsonify(ok=True, reachable=reachable, host=host)
+        rules = subprocess.check_output(
+            ["iptables-save"], text=True
+        ).splitlines()
+
+        reachable = False
+
+        for line in rules:
+            if not line.startswith("-A OUTPUT"):
+                continue
+
+            tokens = line.split()
+
+            # If a DROP rule explicitly blocks ICMP before any allow
+            if "-j" in tokens and tokens[tokens.index("-j") + 1] == "DROP":
+                if "-p" in tokens and tokens[tokens.index("-p") + 1] == "icmp":
+                    reachable = False
+                    break
+
+            # Explicit ICMP allow
+            if "-j" in tokens and tokens[tokens.index("-j") + 1] == "ACCEPT":
+                if "-p" in tokens and tokens[tokens.index("-p") + 1] == "icmp":
+                    reachable = True
+                    break
+
+                # Catch-all ACCEPT (no protocol specified)
+                if "-p" not in tokens:
+                    reachable = True
+                    break
+
+        return jsonify(ok=True, reachable=reachable)
+
     except Exception as e:
-        return jsonify(ok=True, reachable=False, host=host, error=str(e))
+        return jsonify(ok=True, reachable=False, error=str(e))
 
 
 @app.post("/eval/udp_probe")

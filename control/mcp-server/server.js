@@ -29,7 +29,7 @@ async function get(path) {
   return data;
 }
 
-const server = new McpServer({ name: "firewall-mcp", version: "3.1" });
+const server = new McpServer({ name: "firewall-mcp", version: "4.0" });
 
 function toolNoInput(name, desc, path, method = "POST") {
   server.registerTool(
@@ -214,16 +214,41 @@ server.registerTool("input_unblacklist_ip", {
   inputSchema: z.object({ ip: z.string() })
 }, async (args) => ({ content: [{ type: "text", text: JSON.stringify(await postJson("/input/unblacklist_ip", args), null, 2) }] }));
 
-// ipset primitives
+// ========== IP RANGE PRIMITIVES (For Challenge 9) ==========
+server.registerTool("input_blacklist_ip_range", {
+  title: "Blacklist inbound source IP range",
+  description: "Block traffic from a range of source IPs (e.g., 192.168.50.100 to 192.168.50.103). Use for Challenge 9 to block specific IP ranges.",
+  inputSchema: z.object({ start_ip: z.string(), end_ip: z.string() })
+}, async (args) => ({ content: [{ type: "text", text: JSON.stringify(await postJson("/input/blacklist_ip_range", args), null, 2) }] }));
+
+server.registerTool("input_whitelist_ip_range", {
+  title: "Whitelist inbound source IP range",
+  description: "Allow traffic from a range of source IPs (e.g., 192.168.50.1 to 192.168.50.99).",
+  inputSchema: z.object({ start_ip: z.string(), end_ip: z.string() })
+}, async (args) => ({ content: [{ type: "text", text: JSON.stringify(await postJson("/input/whitelist_ip_range", args), null, 2) }] }));
+
+server.registerTool("output_blacklist_ip_range", {
+  title: "Blacklist outbound destination IP range",
+  description: "Block traffic to a range of destination IPs.",
+  inputSchema: z.object({ start_ip: z.string(), end_ip: z.string() })
+}, async (args) => ({ content: [{ type: "text", text: JSON.stringify(await postJson("/output/blacklist_ip_range", args), null, 2) }] }));
+
+server.registerTool("output_whitelist_ip_range", {
+  title: "Whitelist outbound destination IP range",
+  description: "Allow traffic to a range of destination IPs.",
+  inputSchema: z.object({ start_ip: z.string(), end_ip: z.string() })
+}, async (args) => ({ content: [{ type: "text", text: JSON.stringify(await postJson("/output/whitelist_ip_range", args), null, 2) }] }));
+
+// ========== IPSET PRIMITIVES (Enhanced for Challenge 13 & 15) ==========
 server.registerTool("ipset_create", {
   title: "Create/ensure an ipset",
-  description: "Ensure an ipset exists (hash:ip). Optional default timeout.",
+  description: "Ensure an ipset exists (hash:ip). Optional default timeout in seconds. Use this for challenges requiring ipsets with timeouts.",
   inputSchema: z.object({ name: z.string(), timeout_seconds: z.number().int().min(0).optional() })
 }, async (args) => ({ content: [{ type: "text", text: JSON.stringify(await postJson("/ipset/create", args), null, 2) }] }));
 
 server.registerTool("ipset_add_ip", {
   title: "Add IP to ipset",
-  description: "Add an IP to an ipset. Optional per-entry timeout (seconds).",
+  description: "Add an IP to an ipset. Optional per-entry timeout (seconds). For allowlists with timeout (Challenge 13), add IP with timeout then bind set to ACCEPT.",
   inputSchema: z.object({ name: z.string(), ip: z.string(), timeout_seconds: z.number().int().min(0).optional() })
 }, async (args) => ({ content: [{ type: "text", text: JSON.stringify(await postJson("/ipset/add_ip", args), null, 2) }] }));
 
@@ -233,18 +258,51 @@ server.registerTool("ipset_remove_ip", {
   inputSchema: z.object({ name: z.string(), ip: z.string() })
 }, async (args) => ({ content: [{ type: "text", text: JSON.stringify(await postJson("/ipset/remove_ip", args), null, 2) }] }));
 
-// bind set to enforcement
+// ========== BIND SET TO ENFORCEMENT (Enhanced) ==========
 server.registerTool("input_drop_if_src_in_set", {
   title: "Drop inbound if src in set",
-  description: "Bind an ipset so any packet whose source IP is in the set is dropped in INPUT.",
+  description: "Bind an ipset so any packet whose source IP is in the set is DROPPED in INPUT. Use for blocking sources.",
   inputSchema: z.object({ set_name: z.string() })
 }, async (args) => ({ content: [{ type: "text", text: JSON.stringify(await postJson("/bind/input_drop_src_set", args), null, 2) }] }));
 
 server.registerTool("output_drop_if_dst_in_set", {
   title: "Drop outbound if dst in set",
-  description: "Bind an ipset so any packet whose destination IP is in the set is dropped in OUTPUT.",
+  description: "Bind an ipset so any packet whose destination IP is in the set is DROPPED in OUTPUT. Use for Challenge 15 (quarantine).",
   inputSchema: z.object({ set_name: z.string() })
 }, async (args) => ({ content: [{ type: "text", text: JSON.stringify(await postJson("/bind/output_drop_dst_set", args), null, 2) }] }));
+
+server.registerTool("output_accept_if_dst_in_set", {
+  title: "Accept outbound if dst in set",
+  description: "Bind an ipset so any packet whose destination IP is in the set is ACCEPTED in OUTPUT. Use for Challenge 13 (temp allowlist with timeout).",
+  inputSchema: z.object({ set_name: z.string() })
+}, async (args) => ({ content: [{ type: "text", text: JSON.stringify(await postJson("/bind/output_accept_dst_set", args), null, 2) }] }));
+
+server.registerTool("input_accept_if_src_in_set", {
+  title: "Accept inbound if src in set",
+  description: "Bind an ipset so any packet whose source IP is in the set is ACCEPTED in INPUT. Use for allowlists with timeout.",
+  inputSchema: z.object({ set_name: z.string() })
+}, async (args) => ({ content: [{ type: "text", text: JSON.stringify(await postJson("/bind/input_accept_src_set", args), null, 2) }] }));
+
+// ========== SUBNET FILTERING (For Challenge 9) ==========
+server.registerTool("input_allow_port_from_subnet", {
+  title: "Allow inbound port from subnet",
+  description: "Allow INPUT from a CIDR subnet to a specific port. Use for Challenge 9 to allow specific subnet ranges.",
+  inputSchema: z.object({ 
+    port: z.number().int().min(1).max(65535), 
+    protocol: z.enum(["tcp", "udp"]),
+    subnet: z.string()
+  })
+}, async (args) => ({ content: [{ type: "text", text: JSON.stringify(await postJson("/input/allow_port_from_subnet", args), null, 2) }] }));
+
+server.registerTool("input_block_port_from_subnet", {
+  title: "Block inbound port from subnet",
+  description: "Block INPUT from a CIDR subnet to a specific port (inserted at top for priority). Use for Challenge 9 to block specific IPs within allowed ranges.",
+  inputSchema: z.object({ 
+    port: z.number().int().min(1).max(65535), 
+    protocol: z.enum(["tcp", "udp"]),
+    subnet: z.string()
+  })
+}, async (args) => ({ content: [{ type: "text", text: JSON.stringify(await postJson("/input/block_port_from_subnet", args), null, 2) }] }));
 
 // time window + time-aware allow
 server.registerTool("time_window_set", {
@@ -259,10 +317,9 @@ server.registerTool("input_allow_port_with_time_window", {
   inputSchema: z.object({ port: z.number().int().min(1).max(65535), protocol: z.enum(["tcp", "udp", "icmp"]) })
 }, async (args) => ({ content: [{ type: "text", text: JSON.stringify(await postJson("/time_window/input_allow_port", args), null, 2) }] }));
 
-
 server.registerTool("output_allow_port_to_ip", {
   title: "Allow outbound port to specific IP",
-  description: "Allow OUTPUT to specific destination IP:port combination.",
+  description: "Allow OUTPUT to specific destination IP:port combination. Use for Challenge 14 (DNS to specific servers).",
   inputSchema: z.object({ 
     port: z.number().int().min(1).max(65535), 
     protocol: z.enum(["tcp", "udp"]),
@@ -272,13 +329,12 @@ server.registerTool("output_allow_port_to_ip", {
 
 server.registerTool("output_block_port_to_others", {
   title: "Block outbound port to all others",
-  description: "Block OUTPUT to a port for destinations not explicitly allowed (catch-all).",
+  description: "Block OUTPUT to a port for destinations not explicitly allowed (catch-all). Use after allowing specific IPs.",
   inputSchema: z.object({ 
     port: z.number().int().min(1).max(65535), 
     protocol: z.enum(["tcp", "udp"])
   })
 }, async (args) => ({ content: [{ type: "text", text: JSON.stringify(await postJson("/output/block_port_to_others", args), null, 2) }] }));
-
 
 // SSH rate/ban
 server.registerTool("ssh_rate_window_set", {
@@ -319,24 +375,4 @@ server.registerTool("tc_apply_profile_time_window", {
 }, async (args) => ({ content: [{ type: "text", text: JSON.stringify(await postJson("/tc/apply_time_window", args), null, 2) }] }));
 
 await server.connect(new StdioServerTransport());
-console.error("🚀 Firewall MCP Server Started (v3.1 - Dynamic ipsets)");
-
-server.registerTool("input_allow_port_from_subnet", {
-  title: "Allow inbound port from subnet",
-  description: "Allow INPUT from a CIDR subnet to a specific port.",
-  inputSchema: z.object({ 
-    port: z.number().int().min(1).max(65535), 
-    protocol: z.enum(["tcp", "udp"]),
-    subnet: z.string()
-  })
-}, async (args) => ({ content: [{ type: "text", text: JSON.stringify(await postJson("/input/allow_port_from_subnet", args), null, 2) }] }));
-
-server.registerTool("input_block_port_from_subnet", {
-  title: "Block inbound port from subnet",
-  description: "Block INPUT from a CIDR subnet to a specific port (inserted at top).",
-  inputSchema: z.object({ 
-    port: z.number().int().min(1).max(65535), 
-    protocol: z.enum(["tcp", "udp"]),
-    subnet: z.string()
-  })
-}, async (args) => ({ content: [{ type: "text", text: JSON.stringify(await postJson("/input/block_port_from_subnet", args), null, 2) }] }));
+console.error("🚀 Firewall MCP Server Started (v4.0 - Enhanced for Challenges 9, 13, 15)");

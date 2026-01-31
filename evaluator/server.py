@@ -151,24 +151,17 @@ def assert_iptables_policy(status_blob, chain, policy):
 
 
 def assert_ipset_contains(status_blob, setname, ip, present):
-    blob = status_blob.get("ipset") or ""
-    
-    # Check if the set exists
-    if f"Name: {setname}" not in blob:
-        return not present  # Set doesn't exist, so IP can't be present
-    
-    # Parse the ipset output line by line
-    # Each member line is: "IP_ADDRESS [timeout N] [other fields...]"
-    found = False
-    for line in blob.split('\n'):
-        # Strip and split by whitespace
-        parts = line.strip().split()
-        # Check if first element is our IP
-        if parts and parts[0] == ip:
-            found = True
-            break
-    
-    return (found == present)
+    ipsets = status_blob.get("ipsets", {})
+
+    # Set existence
+    if setname not in ipsets:
+        return not present  # if set doesn't exist, IP can't be present
+
+    members = ipsets[setname].get("members", [])
+
+    found = ip in members
+    return found == present
+
 
 def probe_tcp_out(host, port, expect_reachable):
     res = fw_eval_post("/eval/tcp_connect", {"host": host, "port": int(port), "timeout": 1.0})
@@ -325,55 +318,26 @@ def assert_tc_schedule_active(name, start, stop, tz):
 
 def assert_ipset_exists(name, default_timeout=None):
     """Verify ipset exists, optionally check default timeout"""
-    status_blob = fw_get("/status")
-    ipset_output = status_blob.get("ipset", "")
-    
+    status_blob = fw_get("/status/summary")
+    ipsets = status_blob.get("ipsets", {})
+
     # Check existence
-    if f"Name: {name}" not in ipset_output:
+    if name not in ipsets:
         print(f"  DEBUG: IPSet '{name}' does not exist")
         return False
-    
+
     # If timeout check requested
     if default_timeout is not None:
-        # Parse ipset output for timeout value in Header line
-        # Format: "Header: family inet hashsize 1024 maxelem 65536 timeout 1800"
-        lines = ipset_output.split("\n")
-        in_set = False
-        found_timeout = None
-        
-        for line in lines:
-            if f"Name: {name}" in line:
-                in_set = True
-                continue
-            
-            # Stop if we hit another set
-            if in_set and line.strip().startswith("Name:"):
-                break
-            
-            # Look for timeout field in Header line
-            if in_set and line.strip().startswith("Header:") and "timeout" in line:
-                parts = line.strip().split()
-                if "timeout" in parts:
-                    try:
-                        idx = parts.index("timeout")
-                        if idx + 1 < len(parts):
-                            found_timeout = int(parts[idx + 1])
-                            if found_timeout == default_timeout:
-                                return True
-                            else:
-                                print(f"  DEBUG: IPSet '{name}' has timeout={found_timeout}, expected {default_timeout}")
-                                return False
-                    except (ValueError, IndexError):
-                        pass
-                # Timeout field found but couldn't parse
-                print(f"  DEBUG: IPSet '{name}' has timeout in Header but couldn't parse it")
-                return False
-        
-        # If we get here, timeout was expected but not found in the set
-        # This means the set doesn't have a default timeout
-        print(f"  DEBUG: IPSet '{name}' exists but has no default timeout (expected {default_timeout})")
-        return False
-    
+        timeout = ipsets[name].get("timeout")
+
+        if timeout is None:
+            print(f"  DEBUG: IPSet '{name}' exists but has no default timeout (expected {default_timeout})")
+            return False
+
+        if timeout != default_timeout:
+            print(f"  DEBUG: IPSet '{name}' has timeout={timeout}, expected {default_timeout}")
+            return False
+
     return True
 
 
