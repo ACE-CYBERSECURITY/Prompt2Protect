@@ -52,7 +52,9 @@
 
         "input_drop_if_src_in_set",
         "output_drop_if_dst_in_set",
-
+        "output_accept_if_dst_in_set",
+        "input_accept_if_src_in_set",
+        
         "time_window_set",
         "input_allow_port_with_time_window",
 

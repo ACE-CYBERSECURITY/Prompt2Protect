@@ -224,7 +224,7 @@ def bootstrap():
     SSH_PROTECT["enabled"] = False
     tc_clear_best_effort()
 
-
+    IPSET_DEFAULT_TIMEOUTS = {}
 
 def parse_ipset_members(ipset_list_text: str) -> dict:
     sets = {}
@@ -432,26 +432,26 @@ def status_summary():
                         pass
     # --------------------------------------------------
 
+       # Prefer explicit defaults we tracked via /ipset/create,
+    # fall back to parsed header timeouts if present.
+    global IPSET_DEFAULT_TIMEOUTS
+    if IPSET_DEFAULT_TIMEOUTS is None:
+        IPSET_DEFAULT_TIMEOUTS = {}
+
     ipsets_output = {}
-
-    baseline_sets = [
-        IN_ALLOW, IN_BLOCK, OUT_ALLOW, OUT_BLOCK,
-        QUARANTINE_SRC, SSH_BAN_SRC
-    ]
-
-    for set_name in baseline_sets:
-        ipsets_output[set_name] = {
-            "name": set_name,
-            "members": ipset_members.get(set_name, []),
-            "timeout": ipset_timeouts.get(set_name)
+    baseline_sets = [IN_ALLOW, IN_BLOCK, OUT_ALLOW, OUT_BLOCK, QUARANTINE_SRC, SSH_BAN_SRC]
+    for setname in baseline_sets:
+        ipsets_output[setname] = {
+            "name": setname,
+            "members": ipset_members.get(setname, []),
+            "timeout": IPSET_DEFAULT_TIMEOUTS.get(setname, ipset_timeouts.get(setname)),
         }
-
-    for set_name, members in ipset_members.items():
-        if set_name not in baseline_sets:
-            ipsets_output[set_name] = {
-                "name": set_name,
+    for setname, members in ipset_members.items():
+        if setname not in baseline_sets:
+            ipsets_output[setname] = {
+                "name": setname,
                 "members": members,
-                "timeout": ipset_timeouts.get(set_name)
+                "timeout": IPSET_DEFAULT_TIMEOUTS.get(setname, ipset_timeouts.get(setname)),
             }
 
     return jsonify(
@@ -818,7 +818,7 @@ def input_unblacklist_ip():
 def api_ipset_create():
     data = request.get_json(force=True, silent=True) or {}
     name = (data.get("name") or "").strip()
-    if not name or not re.match(r"^[a-zA-Z0-9_\-:]+$", name):
+    if not name or not re.match(r"[a-zA-Z0-9_-]+", name):
         return fail("bad set name")
     timeout = data.get("timeout_seconds", None)
     if timeout is not None:
@@ -826,6 +826,11 @@ def api_ipset_create():
         if timeout < 0:
             return fail("timeout_seconds must be >= 0")
     ensure_ipset(name, timeout_seconds=timeout if timeout != 0 else None)
+
+    # NEW: remember default timeout so /status/summary can report it
+    if timeout is not None:
+        IPSET_DEFAULT_TIMEOUTS[name] = timeout
+
     return ok("ipset ensured", name=name, timeout_seconds=timeout)
 
 @app.post("/ipset/add_ip")

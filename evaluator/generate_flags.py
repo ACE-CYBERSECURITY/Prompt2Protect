@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+
 """
 Generate XOR-encrypted flag hex values for all challenges.
 Usage: python3 generate_flags.py
