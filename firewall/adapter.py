@@ -34,6 +34,8 @@ SSH_PROTECT = {
     "enabled": False,
 }
 
+IPSET_DEFAULT_TIMEOUTS = {}
+
 BASELINE_RULE_FINGERPRINTS = [
     "-A INPUT -i lo -j ACCEPT",
     f"-A INPUT -p tcp --dport {API_PORT} -j ACCEPT",
@@ -163,6 +165,7 @@ def delete_rule(chain: str, rule_args: list[str]):
         pass
 
 def bootstrap():
+    
     # ------------------------
     # Clear previous state
     # ------------------------
@@ -218,13 +221,14 @@ def bootstrap():
     # ------------------------
     # Reset states
     # ------------------------
+    global IPSET_DEFAULT_TIMEOUTS 
     TIME_WINDOW["start"] = None
     TIME_WINDOW["stop"] = None
     TIME_WINDOW["tz"] = "kerneltz"
     SSH_PROTECT["enabled"] = False
     tc_clear_best_effort()
 
-    IPSET_DEFAULT_TIMEOUTS = {}
+    
 
 def parse_ipset_members(ipset_list_text: str) -> dict:
     sets = {}
@@ -408,6 +412,7 @@ def status():
 
 @app.get("/status/summary")
 def status_summary():
+    
     ipt = run(["iptables", "-S"])
     ips = run(["ipset", "list"])
 
@@ -434,7 +439,7 @@ def status_summary():
 
        # Prefer explicit defaults we tracked via /ipset/create,
     # fall back to parsed header timeouts if present.
-    global IPSET_DEFAULT_TIMEOUTS
+    global IPSET_DEFAULT_TIMEOUTS 
     if IPSET_DEFAULT_TIMEOUTS is None:
         IPSET_DEFAULT_TIMEOUTS = {}
 
@@ -816,6 +821,7 @@ def input_unblacklist_ip():
 # ------------------------
 @app.post("/ipset/create")
 def api_ipset_create():
+    global IPSET_DEFAULT_TIMEOUTS 
     data = request.get_json(force=True, silent=True) or {}
     name = (data.get("name") or "").strip()
     if not name or not re.match(r"[a-zA-Z0-9_-]+", name):

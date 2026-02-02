@@ -614,7 +614,6 @@ def main():
 
         print("\n--- Challenge Started ---")
         print(f"Challenge: {challenge['title']}")
-        print(f"Goal: {challenge['goal']}")
         # NOTE: session_id intentionally NOT printed
 
         while True:
