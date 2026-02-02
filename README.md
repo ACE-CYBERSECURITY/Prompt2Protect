@@ -56,6 +56,7 @@ cd Prompt2Protect
 
 # Switch to the lab branch that contains the MCP server + evaluator
 git checkout mcpserver
+git pull
 ```
 
 The `mcpserver` branch contains the updated firewall adapter, MCP server, evaluator, and challenge definitions. 
